@@ -5,7 +5,6 @@ from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import numpy as np
 
-# --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
     layout="wide", 
     page_title="Inventario B&M", 
@@ -13,7 +12,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# --- ESTILOS CUSTOM (CSS) ---
 st.markdown("""
     <style>
     .main {
@@ -37,7 +35,6 @@ st.markdown("""
     div[data-testid="stMetricValue"] {
         font-size: 1.5rem;
     }
-    /* NUEVO: Estilo para el login */
     .login-container {
         padding: 30px; 
         border-radius: 10px; 
@@ -55,7 +52,6 @@ USUARIOS = {
 }
 
 def check_login():
-    """Verifica credenciales y asigna estado de sesión"""
     if 'logged_in' not in st.session_state:
         st.session_state.logged_in = False
         st.session_state.rol = None
@@ -81,12 +77,10 @@ def check_login():
                         st.error("Usuario o contraseña incorrectos")
         return False
     return True
-
-# Si no está logueado, se detiene aquí la ejecución
+    
 if not check_login():
     st.stop()
 
-# Sidebar con botón de salir
 with st.sidebar:
     st.write(f"👤 **{st.session_state.usuario_actual}**")
     st.write(f"🔑 **Rol:** {st.session_state.rol}")
@@ -99,30 +93,22 @@ with st.sidebar:
 st.title("📦 Sistema de Gestión de Inventario B&M")
 st.markdown("---")
 
-# --- CONFIGURACIÓN GOOGLE SHEETS ---
-# Usamos el ID de tu hoja
 GOOGLE_SHEET_ID = "1Zu-Dq6UCYRKMTWNsxj8FsMzzpAdtvl-qb40CVEmwl44"
 
-# Nombres de las pestañas
 INVENTARIO_WS = 'inventario'
 STOCK_MINIMO_WS = 'stock_minimo'
 MOVIMIENTOS_WS = 'movimientos'
 
-# Cabeceras
 inventario_headers = ["codigo", "nombre", "marca", "cantidad", "fecha_vencimiento", "precio_costo", "precio_venta"]
 stock_minimo_headers = ['codigo', 'stock_min']
 movimientos_headers = ["timestamp", "tipo", "codigo", "nombre", "cantidad", "fecha_vencimiento", "precio_costo", "precio_venta"]
 
-# Variables globales en memoria
 inventario = {}
 stock_minimo = {}
 movimientos = []
 
-# --- CONEXIÓN Y FUNCIONES AUXILIARES ---
-
 @st.cache_resource(ttl=3600)
 def obtener_conexion():
-    """Conecta con Google Sheets usando st.secrets"""
     try:
         credentials = dict(st.secrets["gcp_service_account"])
         
@@ -137,7 +123,6 @@ def obtener_conexion():
         st.stop()
 
 def check_worksheets(sh):
-    """Asegura que las pestañas existan y tengan headers"""
     try:
         titulos_actuales = [ws.title for ws in sh.worksheets()]
         
@@ -192,7 +177,6 @@ def ordenar_lotes_fifo(lotes):
     return sorted(lotes, key=clave)
 
 def _escribir_sheet(ws_name, headers, datos):
-    """Sobreescribe una pestaña completa con nuevos datos"""
     try:
         sh = obtener_conexion()
         ws = sh.worksheet(ws_name)
@@ -209,10 +193,7 @@ def _escribir_sheet(ws_name, headers, datos):
     except Exception as e:
         st.error(f"Error guardando en {ws_name}: {e}")
 
-# --- LOGICA DE NEGOCIO ---
-
 def cargar_todo():
-    """Carga datos desde Sheets a memoria. Se ejecuta en cada run de Streamlit."""
     inventario.clear()
     stock_minimo.clear()
     movimientos.clear()
@@ -220,12 +201,11 @@ def cargar_todo():
     sh = obtener_conexion()
     check_worksheets(sh)
     
-    # 1. Cargar Inventario
     try:
         ws_inv = sh.worksheet(INVENTARIO_WS)
         vals_inv = ws_inv.get_all_values()
         if len(vals_inv) > 1:
-            for fila in vals_inv[1:]: # Saltar header
+            for fila in vals_inv[1:]: 
                 fila += [""] * (len(inventario_headers) - len(fila))
                 codigo, nombre, marca, cant, fv, pc, pv = fila[:len(inventario_headers)]
                 
@@ -244,7 +224,6 @@ def cargar_todo():
                 inventario[codigo].append(lote)
     except Exception as e: st.error(f"Error leyendo inventario: {e}")
 
-    # 2. Cargar Stock Minimo
     try:
         ws_min = sh.worksheet(STOCK_MINIMO_WS)
         vals_min = ws_min.get_all_values()
@@ -254,7 +233,6 @@ def cargar_todo():
                     stock_minimo[fila[0]] = _convertir_a_numero(fila[1] if len(fila)>1 else 0)
     except Exception as e: st.error(f"Error leyendo stock minimo: {e}")
 
-    # 3. Cargar Movimientos
     try:
         ws_mov = sh.worksheet(MOVIMIENTOS_WS)
         vals_mov = ws_mov.get_all_values()
@@ -265,7 +243,6 @@ def cargar_todo():
     
     st.session_state['data_loaded'] = True
 
-# Funciones de guardado
 def guardar_inventario():
     filas = []
     for codigo, lotes in inventario.items():
@@ -300,28 +277,21 @@ def registrar_movimiento(tipo, codigo, nombre, cantidad, fecha_vencimiento, prec
     except Exception as e:
         st.error(f"Error registrando movimiento: {e}")
 
-# --- INICIALIZACIÓN ---
 if 'data_loaded' not in st.session_state:
     cargar_todo()
 else:
     cargar_todo()
 
-# --- INTERFAZ STREAMLIT (MODIFICADA PARA ROLES) ---
-
-# Inicializamos las variables para evitar errores
 tab1, tab2, tab3, tab4, tab5, tab6 = None, None, None, None, None, None
 
-# Lógica de pestañas según rol
 if st.session_state.rol == "administrador":
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📥 Entrada", "📤 Salida", "📋 Inventario", 
         "📊 Historial", "📉 Stock Mínimo", "⏰ Vencimientos"
     ])
 else:
-    # Empleado solo ve 2 pestañas
     tab1, tab2 = st.tabs(["📥 Entrada", "📤 Salida"])
 
-# === TAB 1: ENTRADA (Para todos) ===
 with tab1:
     st.subheader("📥 Registro de Entradas")
     
@@ -330,7 +300,6 @@ with tab1:
 
     input_key = f"entrada_input_{st.session_state.reset_counter}"
     
-    # Diseño en columna central para búsqueda
     col_search, _ = st.columns([1, 1])
     with col_search:
         entrada = st.text_input("🔍 Escanee código o escriba 'buscar': ", key=input_key)
@@ -376,7 +345,6 @@ with tab1:
             st.success(f"📦 Editando: **{base.get('nombre')}** ({base.get('marca')})")
         
         with st.form("form_entrada", clear_on_submit = True):
-            # Layout de formulario en columnas
             c1, c2 = st.columns(2)
             
             nombre_def = '' if es_nuevo else inventario[codigo_seleccionado][0].get('nombre', '')
@@ -440,7 +408,6 @@ with tab1:
                 st.session_state.reset_counter += 1
                 st.rerun()
 
-# === TAB 2: SALIDA (Para todos) ===
 with tab2:
     st.subheader("📤 Registro de Salidas")
     
@@ -534,10 +501,7 @@ with tab2:
                 st.success("Salidas registradas correctamente!")
                 st.rerun() 
 
-# === BLOQUE DE ADMINISTRADOR (Tabs 3, 4, 5, 6) ===
-# IMPORTANTE: Todo tu código restante está dentro de este IF
 if tab3:
-    # === TAB 3: MOSTRAR INVENTARIO ===
     with tab3:
         st.subheader("📋 Inventario Completo")
         
@@ -553,7 +517,6 @@ if tab3:
                 st.warning("Inventario vacío.")
                 df_inv = pd.DataFrame(columns=inventario_headers)
 
-            # Filtros y Estadísticas
             c_search, c_metric1, c_metric2 = st.columns([2, 1, 1])
             with c_search:
                 busqueda = st.text_input("🔍 Buscar en inventario:", key="search_inv", placeholder="Nombre, Marca o Código...")
@@ -592,11 +555,9 @@ if tab3:
         except Exception as e:
             st.error(f"Error cargando inventario: {e}")
 
-    # === TAB 4: REPORTE MOVIMIENTOS ===
     with tab4:
         st.subheader("📊 Historial de Movimientos")
         
-        # Filtros en un container expansible para limpieza visual
         with st.expander("🛠️ Filtros de Búsqueda", expanded=True):
             col_izq, col_der = st.columns(2)
 
@@ -650,7 +611,6 @@ if tab3:
                     if codigo_seleccionado is not None:
                         df_filtrado = df_filtrado[df_filtrado['codigo'] == codigo_seleccionado]
 
-                    # Visualización
                     c_graf, c_tabla = st.columns([1, 1])
                     
                     with c_graf:
@@ -684,7 +644,6 @@ if tab3:
                 except Exception as e:
                     st.error(f"Error procesando datos: {e}")
 
-    # === TAB 5: STOCK ===
     with tab5:
         st.subheader("📉 Niveles de Stock")
 
@@ -718,7 +677,6 @@ if tab3:
             df_reporte['Estado'] = df_reporte.apply(semaforo, axis = 1)
             df_reporte = df_reporte.sort_values(by=['Estado', 'stock_total_calc'])
 
-            # Métricas de resumen
             c_crit, c_warn, c_ok = st.columns(3)
             with c_crit: st.metric("🔴 Estado Crítico", len(df_reporte[df_reporte['Estado'] == "🔴 Crítico"]))
             with c_warn: st.metric("🟡 Advertencia", len(df_reporte[df_reporte['Estado'] == "🟡 Advertencia"]))
@@ -740,7 +698,6 @@ if tab3:
         else:
             st.warning("Sin datos de inventario.")
 
-    # === TAB 6: VENCIMIENTOS ===
     with tab6:
         st.subheader("⏰ Alertas de Vencimiento")
         
