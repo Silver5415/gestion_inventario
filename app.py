@@ -95,9 +95,6 @@ with st.sidebar:
         st.session_state.rol = None
         st.rerun()
 
-# ==========================================
-# === FIN BLOQUE LOGIN - INICIA TU CÓDIGO ===
-# ==========================================
 
 st.title("📦 Sistema de Gestión de Inventario B&M")
 st.markdown("---")
@@ -790,5 +787,6 @@ if tab3:
             )
         else:
             st.success("✅ No hay productos próximos a vencer según los rangos seleccionados.")
+
 
 
