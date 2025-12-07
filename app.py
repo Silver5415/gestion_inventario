@@ -35,6 +35,7 @@ st.markdown("""
     div[data-testid="stMetricValue"] {
         font-size: 1.5rem;
     }
+    /* NUEVO: Estilo para el login */
     .login-container {
         padding: 30px; 
         border-radius: 10px; 
@@ -52,6 +53,7 @@ USUARIOS = {
 }
 
 def check_login():
+    """Verifica credenciales y asigna estado de sesión"""
     if 'logged_in' not in st.session_state:
         st.session_state.logged_in = False
         st.session_state.rol = None
@@ -109,6 +111,7 @@ movimientos = []
 
 @st.cache_resource(ttl=3600)
 def obtener_conexion():
+    """Conecta con Google Sheets usando st.secrets"""
     try:
         credentials = dict(st.secrets["gcp_service_account"])
         
@@ -123,6 +126,7 @@ def obtener_conexion():
         st.stop()
 
 def check_worksheets(sh):
+    """Asegura que las pestañas existan y tengan headers"""
     try:
         titulos_actuales = [ws.title for ws in sh.worksheets()]
         
@@ -177,6 +181,7 @@ def ordenar_lotes_fifo(lotes):
     return sorted(lotes, key=clave)
 
 def _escribir_sheet(ws_name, headers, datos):
+    """Sobreescribe una pestaña completa con nuevos datos"""
     try:
         sh = obtener_conexion()
         ws = sh.worksheet(ws_name)
@@ -194,6 +199,7 @@ def _escribir_sheet(ws_name, headers, datos):
         st.error(f"Error guardando en {ws_name}: {e}")
 
 def cargar_todo():
+    """Carga datos desde Sheets a memoria. Se ejecuta en cada run de Streamlit."""
     inventario.clear()
     stock_minimo.clear()
     movimientos.clear()
@@ -205,7 +211,7 @@ def cargar_todo():
         ws_inv = sh.worksheet(INVENTARIO_WS)
         vals_inv = ws_inv.get_all_values()
         if len(vals_inv) > 1:
-            for fila in vals_inv[1:]: 
+            for fila in vals_inv[1:]: # Saltar header
                 fila += [""] * (len(inventario_headers) - len(fila))
                 codigo, nombre, marca, cant, fv, pc, pv = fila[:len(inventario_headers)]
                 
@@ -242,7 +248,7 @@ def cargar_todo():
     except Exception as e: st.error(f"Error leyendo movimientos: {e}")
     
     st.session_state['data_loaded'] = True
-
+    
 def guardar_inventario():
     filas = []
     for codigo, lotes in inventario.items():
@@ -276,7 +282,7 @@ def registrar_movimiento(tipo, codigo, nombre, cantidad, fecha_vencimiento, prec
         movimientos.append(nueva_fila) 
     except Exception as e:
         st.error(f"Error registrando movimiento: {e}")
-
+        
 if 'data_loaded' not in st.session_state:
     cargar_todo()
 else:
@@ -697,7 +703,7 @@ if tab3:
             )
         else:
             st.warning("Sin datos de inventario.")
-
+            
     with tab6:
         st.subheader("⏰ Alertas de Vencimiento")
         
@@ -744,6 +750,7 @@ if tab3:
             )
         else:
             st.success("✅ No hay productos próximos a vencer según los rangos seleccionados.")
+
 
 
 
