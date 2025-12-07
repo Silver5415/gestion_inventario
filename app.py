@@ -4,7 +4,7 @@ import gspread
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import numpy as np
-#xd
+
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
     layout="wide", 
@@ -37,8 +37,72 @@ st.markdown("""
     div[data-testid="stMetricValue"] {
         font-size: 1.5rem;
     }
+    /* NUEVO: Estilo para el login */
+    .login-container {
+        padding: 30px; 
+        border-radius: 10px; 
+        background-color: white; 
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        max-width: 400px;
+        margin: auto;
+    }
     </style>
     """, unsafe_allow_html=True)
+
+# ==========================================
+# === NUEVO BLOQUE: SISTEMA DE LOGIN ===
+# ==========================================
+
+# Usuarios definidos (puedes cambiar las contraseñas aquí)
+USUARIOS = {
+    "admin": {"pass": "admin123", "rol": "administrador"},
+    "empleado": {"pass": "user123", "rol": "empleado"}
+}
+
+def check_login():
+    """Verifica credenciales y asigna estado de sesión"""
+    if 'logged_in' not in st.session_state:
+        st.session_state.logged_in = False
+        st.session_state.rol = None
+        st.session_state.usuario_actual = None
+
+    if not st.session_state.logged_in:
+        st.markdown("<br><br>", unsafe_allow_html=True)
+        c1, c2, c3 = st.columns([1, 2, 1])
+        with c2:
+            st.markdown("<h2 style='text-align: center;'>🔐 Iniciar Sesión</h2>", unsafe_allow_html=True)
+            with st.form("login_form"):
+                user = st.text_input("Usuario")
+                password = st.text_input("Contraseña", type="password")
+                submit = st.form_submit_button("Ingresar", type="primary")
+                
+                if submit:
+                    if user in USUARIOS and USUARIOS[user]["pass"] == password:
+                        st.session_state.logged_in = True
+                        st.session_state.usuario_actual = user
+                        st.session_state.rol = USUARIOS[user]["rol"]
+                        st.rerun()
+                    else:
+                        st.error("Usuario o contraseña incorrectos")
+        return False
+    return True
+
+# Si no está logueado, se detiene aquí la ejecución
+if not check_login():
+    st.stop()
+
+# Sidebar con botón de salir
+with st.sidebar:
+    st.write(f"👤 **{st.session_state.usuario_actual}**")
+    st.write(f"🔑 **Rol:** {st.session_state.rol}")
+    if st.button("Cerrar Sesión"):
+        st.session_state.logged_in = False
+        st.session_state.rol = None
+        st.rerun()
+
+# ==========================================
+# === FIN BLOQUE LOGIN - INICIA TU CÓDIGO ===
+# ==========================================
 
 st.title("📦 Sistema de Gestión de Inventario B&M")
 st.markdown("---")
@@ -250,13 +314,22 @@ if 'data_loaded' not in st.session_state:
 else:
     cargar_todo()
 
-# --- INTERFAZ STREAMLIT ---
-# Tabs con iconos para mejor apariencia
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "📥 Entrada", "📤 Salida", "📋 Inventario", 
-    "📊 Historial", "📉 Stock Mínimo", "⏰ Vencimientos"
-])
+# --- INTERFAZ STREAMLIT (MODIFICADA PARA ROLES) ---
 
+# Inicializamos las variables para evitar errores
+tab1, tab2, tab3, tab4, tab5, tab6 = None, None, None, None, None, None
+
+# Lógica de pestañas según rol
+if st.session_state.rol == "administrador":
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "📥 Entrada", "📤 Salida", "📋 Inventario", 
+        "📊 Historial", "📉 Stock Mínimo", "⏰ Vencimientos"
+    ])
+else:
+    # Empleado solo ve 2 pestañas
+    tab1, tab2 = st.tabs(["📥 Entrada", "📤 Salida"])
+
+# === TAB 1: ENTRADA (Para todos) ===
 with tab1:
     st.subheader("📥 Registro de Entradas")
     
@@ -375,6 +448,7 @@ with tab1:
                 st.session_state.reset_counter += 1
                 st.rerun()
 
+# === TAB 2: SALIDA (Para todos) ===
 with tab2:
     st.subheader("📤 Registro de Salidas")
     
@@ -468,252 +542,257 @@ with tab2:
                 st.success("Salidas registradas correctamente!")
                 st.rerun() 
 
-# === TAB 3: MOSTRAR INVENTARIO ===
-with tab3:
-    st.subheader("📋 Inventario Completo")
-    
-    try:
-        sh = obtener_conexion()
-        ws_inv = sh.worksheet(INVENTARIO_WS)
-        data = ws_inv.get_all_values()
+# === BLOQUE DE ADMINISTRADOR (Tabs 3, 4, 5, 6) ===
+# IMPORTANTE: Todo tu código restante está dentro de este IF
+if tab3:
+    # === TAB 3: MOSTRAR INVENTARIO ===
+    with tab3:
+        st.subheader("📋 Inventario Completo")
         
-        if len(data) > 1:
-            df_inv = pd.DataFrame(data[1:], columns=data[0])
-            df_inv['cantidad'] = df_inv['cantidad'].apply(_convertir_a_numero)
-        else:
-            st.warning("Inventario vacío.")
-            df_inv = pd.DataFrame(columns=inventario_headers)
-
-        # Filtros y Estadísticas
-        c_search, c_metric1, c_metric2 = st.columns([2, 1, 1])
-        with c_search:
-            busqueda = st.text_input("🔍 Buscar en inventario:", key="search_inv", placeholder="Nombre, Marca o Código...")
-        
-        if busqueda:
-            busqueda_lower = busqueda.lower()
-            filtro = (df_inv['codigo'].astype(str).str.contains(busqueda_lower, case=False, na=False)) | \
-                     (df_inv['nombre'].astype(str).str.contains(busqueda_lower, case=False, na=False)) | \
-                     (df_inv['marca'].astype(str).str.contains(busqueda_lower, case=False, na=False))
-            df_filtrado = df_inv[filtro]
-        else:
-            df_filtrado = df_inv
-
-        with c_metric1:
-            st.metric("Total Productos", len(df_filtrado))
-        with c_metric2:
-            total_stock_view = df_filtrado['cantidad'].sum() if not df_filtrado.empty else 0
-            st.metric("Stock Total Unidades", total_stock_view)
-        
-        st.dataframe(
-            df_filtrado, 
-            use_container_width=True,
-            height=500,
-            hide_index=True,
-            column_config={
-                'codigo': st.column_config.TextColumn("Código"),
-                'nombre': st.column_config.TextColumn("Nombre"),
-                'marca': st.column_config.TextColumn("Marca"),
-                "fecha_vencimiento": st.column_config.TextColumn("Vencimiento", width="medium"),
-                "cantidad": st.column_config.NumberColumn("Stock", format="%d"),
-                "precio_costo": st.column_config.NumberColumn("Costo", format="$%d"),
-                "precio_venta": st.column_config.NumberColumn("Venta", format="$%d"),
-            }
-        )
-        
-    except Exception as e:
-        st.error(f"Error cargando inventario: {e}")
-
-# === TAB 4: REPORTE MOVIMIENTOS ===
-with tab4:
-    st.subheader("📊 Historial de Movimientos")
-    
-    # Filtros en un container expansible para limpieza visual
-    with st.expander("🛠️ Filtros de Búsqueda", expanded=True):
-        col_izq, col_der = st.columns(2)
-
-        with col_izq:
-            productos_lista = []
-            for codigo, lotes in inventario.items():
-                if lotes:
-                    base = lotes[0]
-                    productos_lista.append((codigo, base.get('nombre') or 'N/A', base.get('marca') or 'N/A'))
-            productos_lista.sort(key=lambda x: x[1])
-
-            opciones = [f"{i+1}) {nombre} - {marca} (Código: {codigo})" for i, (codigo, nombre, marca) in enumerate(productos_lista)]
-            opciones.insert(0, "Cancelar")
-            opciones.insert(1, 'Todos los productos')
-            seleccion = st.selectbox("Producto:", opciones, key="mov_prod_sel")
-
-            codigo_seleccionado = None
-            if seleccion != 'Cancelar' and seleccion != 'Todos los productos':
-                idx = opciones.index(seleccion) - 2
-                codigo_seleccionado = productos_lista[idx][0]
+        try:
+            sh = obtener_conexion()
+            ws_inv = sh.worksheet(INVENTARIO_WS)
+            data = ws_inv.get_all_values()
             
-            tipo_movimiento = st.multiselect("Tipo:", ["entrada", "salida"], key="tipo_movimiento")
+            if len(data) > 1:
+                df_inv = pd.DataFrame(data[1:], columns=data[0])
+                df_inv['cantidad'] = df_inv['cantidad'].apply(_convertir_a_numero)
+            else:
+                st.warning("Inventario vacío.")
+                df_inv = pd.DataFrame(columns=inventario_headers)
 
-        with col_der:
-            c_f1, c_f2 = st.columns(2)
-            with c_f1: fecha_inicio = st.date_input("Desde:", key="mov_f_ini")
-            with c_f2: fecha_fin = st.date_input("Hasta:", key="mov_f_fin")
+            # Filtros y Estadísticas
+            c_search, c_metric1, c_metric2 = st.columns([2, 1, 1])
+            with c_search:
+                busqueda = st.text_input("🔍 Buscar en inventario:", key="search_inv", placeholder="Nombre, Marca o Código...")
             
-            st.markdown("<br>", unsafe_allow_html=True)
-            btn_filtrar = st.button("🔎 Buscar Movimientos", type="primary")
+            if busqueda:
+                busqueda_lower = busqueda.lower()
+                filtro = (df_inv['codigo'].astype(str).str.contains(busqueda_lower, case=False, na=False)) | \
+                        (df_inv['nombre'].astype(str).str.contains(busqueda_lower, case=False, na=False)) | \
+                        (df_inv['marca'].astype(str).str.contains(busqueda_lower, case=False, na=False))
+                df_filtrado = df_inv[filtro]
+            else:
+                df_filtrado = df_inv
 
-    if btn_filtrar:
-        if not movimientos:
-            st.info("No hay movimientos registrados.")
-        else:
-            try:
-                df = pd.DataFrame(movimientos, columns=movimientos_headers)
-                df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
-                
-                fecha_inicio = pd.to_datetime(fecha_inicio)
-                fecha_fin = pd.to_datetime(fecha_fin) + pd.Timedelta(days=1)
-                
-                df_filtrado = df.loc[(df["timestamp"] >= fecha_inicio) & (df["timestamp"] < fecha_fin)].copy()
-                df_filtrado['cantidad'] = df_filtrado['cantidad'].apply(_convertir_a_numero)
+            with c_metric1:
+                st.metric("Total Productos", len(df_filtrado))
+            with c_metric2:
+                total_stock_view = df_filtrado['cantidad'].sum() if not df_filtrado.empty else 0
+                st.metric("Stock Total Unidades", total_stock_view)
+            
+            st.dataframe(
+                df_filtrado, 
+                use_container_width=True,
+                height=500,
+                hide_index=True,
+                column_config={
+                    'codigo': st.column_config.TextColumn("Código"),
+                    'nombre': st.column_config.TextColumn("Nombre"),
+                    'marca': st.column_config.TextColumn("Marca"),
+                    "fecha_vencimiento": st.column_config.TextColumn("Vencimiento", width="medium"),
+                    "cantidad": st.column_config.NumberColumn("Stock", format="%d"),
+                    "precio_costo": st.column_config.NumberColumn("Costo", format="$%d"),
+                    "precio_venta": st.column_config.NumberColumn("Venta", format="$%d"),
+                }
+            )
+            
+        except Exception as e:
+            st.error(f"Error cargando inventario: {e}")
 
-                if tipo_movimiento:
-                    df_filtrado = df_filtrado[df_filtrado['tipo'].isin(tipo_movimiento)]
-
-                if codigo_seleccionado is not None:
-                    df_filtrado = df_filtrado[df_filtrado['codigo'] == codigo_seleccionado]
-
-                # Visualización
-                c_graf, c_tabla = st.columns([1, 1])
-                
-                with c_graf:
-                    if 'entrada' in tipo_movimiento or not tipo_movimiento:
-                        df_e = df_filtrado[df_filtrado['tipo'] == 'entrada']
-                        if not df_e.empty:
-                            fig, ax = plt.subplots(figsize=(6, 4))
-                            ax.scatter(df_e["timestamp"], df_e["cantidad"], alpha=0.7, color='green')
-                            ax.set_title("Entradas")
-                            ax.tick_params(axis='x', rotation=45)
-                            st.pyplot(fig)
-                    
-                    if 'salida' in tipo_movimiento or not tipo_movimiento:
-                        df_s = df_filtrado[df_filtrado['tipo'] == 'salida']
-                        if not df_s.empty:
-                            fig2, ax2 = plt.subplots(figsize=(6, 4))
-                            ax2.scatter(df_s["timestamp"], df_s["cantidad"], alpha=0.7, color='red')
-                            ax2.set_title("Salidas")
-                            ax2.tick_params(axis='x', rotation=45)
-                            st.pyplot(fig2)
-
-                with c_tabla:
-                    df_filtrado['fecha'] = df_filtrado['timestamp'].dt.date
-                    df_filtrado['hora'] = df_filtrado['timestamp'].dt.time
-                    
-                    st.dataframe(
-                        df_filtrado[["fecha", "hora", "tipo", "nombre", "cantidad"]],
-                        hide_index=True,
-                        use_container_width=True
-                    )
-            except Exception as e:
-                st.error(f"Error procesando datos: {e}")
-
-# === TAB 5: STOCK ===
-with tab5:
-    st.subheader("📉 Niveles de Stock")
-
-    data_rows = []
-    for c, lotes in inventario.items():
-        if lotes:
-            base = lotes[0]
-            data_rows.append({
-                'codigo': c, 'nombre': base.get('nombre'), 'stock_total_calc': stock_total(c)
-            })
-    df_inv_sin_lotes = pd.DataFrame(data_rows)
-    
-    df_stock_min = pd.DataFrame(list(stock_minimo.items()), columns=['codigo', 'stock_min'])
-    df_stock_min['stock_min'] = df_stock_min['stock_min'].apply(_convertir_a_numero)
-    
-    if not df_inv_sin_lotes.empty:
-        df_reporte = pd.merge(df_stock_min, df_inv_sin_lotes, on='codigo', how='outer')
-        df_reporte['stock_total_calc'] = df_reporte['stock_total_calc'].fillna(0).astype(int)
-        df_reporte['stock_min'] = df_reporte['stock_min'].fillna(0).astype(int)
-        df_reporte['nombre'] = df_reporte['nombre'].fillna('Sin nombre')
-        df_reporte = df_reporte.dropna(subset=['codigo'])
-        df_reporte = df_reporte.drop_duplicates(subset=['codigo'])
-
-        def semaforo(fila):
-            total = fila['stock_total_calc']
-            minimo = fila['stock_min']
-            if total <= minimo: return "🔴 Crítico"
-            elif total <= 1.5*minimo: return "🟡 Advertencia"
-            else: return "🟢 Óptimo"
-
-        df_reporte['Estado'] = df_reporte.apply(semaforo, axis = 1)
-        df_reporte = df_reporte.sort_values(by=['Estado', 'stock_total_calc'])
-
-        # Métricas de resumen
-        c_crit, c_warn, c_ok = st.columns(3)
-        with c_crit: st.metric("🔴 Estado Crítico", len(df_reporte[df_reporte['Estado'] == "🔴 Crítico"]))
-        with c_warn: st.metric("🟡 Advertencia", len(df_reporte[df_reporte['Estado'] == "🟡 Advertencia"]))
-        with c_ok: st.metric("🟢 Óptimo", len(df_reporte[df_reporte['Estado'] == "🟢 Óptimo"]))
-
-        busqueda = st.text_input("🔍 Buscar código en reporte:", key="search_stock_min")
-        if busqueda:
-            df_reporte = df_reporte[df_reporte['codigo'].astype(str).str.contains(busqueda, case=False, na=False)]
+    # === TAB 4: REPORTE MOVIMIENTOS ===
+    with tab4:
+        st.subheader("📊 Historial de Movimientos")
         
-        st.dataframe(
-            df_reporte, 
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                'codigo': "Código", 'nombre': "Nombre", "stock_min": "Minimo",
-                'stock_total_calc': "Actual", 'Estado': "Estado"
-            }
-        )
-    else:
-        st.warning("Sin datos de inventario.")
+        # Filtros en un container expansible para limpieza visual
+        with st.expander("🛠️ Filtros de Búsqueda", expanded=True):
+            col_izq, col_der = st.columns(2)
 
-# === TAB 6: VENCIMIENTOS ===
-with tab6:
-    st.subheader("⏰ Alertas de Vencimiento")
-    
-    with st.expander("⚙️ Configuración de Alertas", expanded=True):
-        col_v1, col_v2, col_v3 = st.columns(3)
-        alerta_critica = col_v1.slider("Días Críticos (🔴)", 0, 60, 3)
-        alerta_adv = col_v2.slider("Días Advertencia (🟡)", 0, 90, 7)
-        alerta_preventiva = col_v3.slider("Días Preventivos (🟠)", 0, 120, 12)
+            with col_izq:
+                productos_lista = []
+                for codigo, lotes in inventario.items():
+                    if lotes:
+                        base = lotes[0]
+                        nombre = base.get('nombre') or 'N/A'
+                        marca = base.get('marca') or 'N/A'
+                        productos_lista.append((codigo, nombre, marca))
+                productos_lista.sort(key=lambda x: x[1])
 
-    hoy = datetime.now().date()
-    alertas = []
+                opciones = [f"{i+1}) {nombre} - {marca} (Código: {codigo})" for i, (codigo, nombre, marca) in enumerate(productos_lista)]
+                opciones.insert(0, "Cancelar")
+                opciones.insert(1, 'Todos los productos')
+                seleccion = st.selectbox("Producto:", opciones, key="mov_prod_sel")
 
-    for codigo, lotes in inventario.items():
-        for lote in lotes:
-            fv = lote.get("fecha_vencimiento")
-            estado = None
-            if fv:
+                codigo_seleccionado = None
+                if seleccion != 'Cancelar' and seleccion != 'Todos los productos':
+                    idx = opciones.index(seleccion) - 2
+                    codigo_seleccionado = productos_lista[idx][0]
+                
+                tipo_movimiento = st.multiselect("Tipo:", ["entrada", "salida"], key="tipo_movimiento")
+
+            with col_der:
+                c_f1, c_f2 = st.columns(2)
+                with c_f1: fecha_inicio = st.date_input("Desde:", key="mov_f_ini")
+                with c_f2: fecha_fin = st.date_input("Hasta:", key="mov_f_fin")
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+                btn_filtrar = st.button("🔎 Buscar Movimientos", type="primary")
+
+        if btn_filtrar:
+            if not movimientos:
+                st.info("No hay movimientos registrados.")
+            else:
                 try:
-                    fv_date = datetime.strptime(fv, "%Y-%m-%d").date()
-                    dias_restantes = (fv_date - hoy).days
+                    df = pd.DataFrame(movimientos, columns=movimientos_headers)
+                    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+                    
+                    fecha_inicio = pd.to_datetime(fecha_inicio)
+                    fecha_fin = pd.to_datetime(fecha_fin) + pd.Timedelta(days=1)
+                    
+                    df_filtrado = df.loc[(df["timestamp"] >= fecha_inicio) & (df["timestamp"] < fecha_fin)].copy()
+                    df_filtrado['cantidad'] = df_filtrado['cantidad'].apply(_convertir_a_numero)
 
-                    if dias_restantes < 0: estado = 'Vencido ❌'
-                    elif dias_restantes <= alerta_critica: estado = 'Alerta Crítica 🔴'
-                    elif  dias_restantes <= alerta_adv: estado = 'Alerta Advertencia 🟡'
-                    elif dias_restantes <= alerta_preventiva: estado = 'Alerta Preventiva 🟠'
+                    if tipo_movimiento:
+                        df_filtrado = df_filtrado[df_filtrado['tipo'].isin(tipo_movimiento)]
 
-                    if estado:
-                        alertas.append({
-                            'Estado': estado, 'Fecha': fv, 'Días': dias_restantes,
-                            'Nombre': lote['nombre'], 'Cantidad': lote['cantidad'], 'Código': codigo
-                        })
-                except: pass
+                    if codigo_seleccionado is not None:
+                        df_filtrado = df_filtrado[df_filtrado['codigo'] == codigo_seleccionado]
 
-    if alertas:
-        df_alertas = pd.DataFrame(alertas).sort_values(by='Días')
-        st.dataframe(
-            df_alertas, 
-            use_container_width=True, 
-            hide_index=True,
-            column_config={
-                "Días": st.column_config.NumberColumn("Días Restantes", format="%d"),
-                "Fecha": st.column_config.DateColumn("Vencimiento")
-            }
-        )
-    else:
-        st.success("✅ No hay productos próximos a vencer según los rangos seleccionados.")
+                    # Visualización
+                    c_graf, c_tabla = st.columns([1, 1])
+                    
+                    with c_graf:
+                        if 'entrada' in tipo_movimiento or not tipo_movimiento:
+                            df_e = df_filtrado[df_filtrado['tipo'] == 'entrada']
+                            if not df_e.empty:
+                                fig, ax = plt.subplots(figsize=(6, 4))
+                                ax.scatter(df_e["timestamp"], df_e["cantidad"], alpha=0.7, color='green')
+                                ax.set_title("Entradas")
+                                ax.tick_params(axis='x', rotation=45)
+                                st.pyplot(fig)
+                        
+                        if 'salida' in tipo_movimiento or not tipo_movimiento:
+                            df_s = df_filtrado[df_filtrado['tipo'] == 'salida']
+                            if not df_s.empty:
+                                fig2, ax2 = plt.subplots(figsize=(6, 4))
+                                ax2.scatter(df_s["timestamp"], df_s["cantidad"], alpha=0.7, color='red')
+                                ax2.set_title("Salidas")
+                                ax2.tick_params(axis='x', rotation=45)
+                                st.pyplot(fig2)
+
+                    with c_tabla:
+                        df_filtrado['fecha'] = df_filtrado['timestamp'].dt.date
+                        df_filtrado['hora'] = df_filtrado['timestamp'].dt.time
+                        
+                        st.dataframe(
+                            df_filtrado[["fecha", "hora", "tipo", "nombre", "cantidad"]],
+                            hide_index=True,
+                            use_container_width=True
+                        )
+                except Exception as e:
+                    st.error(f"Error procesando datos: {e}")
+
+    # === TAB 5: STOCK ===
+    with tab5:
+        st.subheader("📉 Niveles de Stock")
+
+        data_rows = []
+        for c, lotes in inventario.items():
+            if lotes:
+                base = lotes[0]
+                data_rows.append({
+                    'codigo': c, 'nombre': base.get('nombre'), 'stock_total_calc': stock_total(c)
+                })
+        df_inv_sin_lotes = pd.DataFrame(data_rows)
+        
+        df_stock_min = pd.DataFrame(list(stock_minimo.items()), columns=['codigo', 'stock_min'])
+        df_stock_min['stock_min'] = df_stock_min['stock_min'].apply(_convertir_a_numero)
+        
+        if not df_inv_sin_lotes.empty:
+            df_reporte = pd.merge(df_stock_min, df_inv_sin_lotes, on='codigo', how='outer')
+            df_reporte['stock_total_calc'] = df_reporte['stock_total_calc'].fillna(0).astype(int)
+            df_reporte['stock_min'] = df_reporte['stock_min'].fillna(0).astype(int)
+            df_reporte['nombre'] = df_reporte['nombre'].fillna('Sin nombre')
+            df_reporte = df_reporte.dropna(subset=['codigo'])
+            df_reporte = df_reporte.drop_duplicates(subset=['codigo'])
+
+            def semaforo(fila):
+                total = fila['stock_total_calc']
+                minimo = fila['stock_min']
+                if total <= minimo: return "🔴 Crítico"
+                elif total <= 1.5*minimo: return "🟡 Advertencia"
+                else: return "🟢 Óptimo"
+
+            df_reporte['Estado'] = df_reporte.apply(semaforo, axis = 1)
+            df_reporte = df_reporte.sort_values(by=['Estado', 'stock_total_calc'])
+
+            # Métricas de resumen
+            c_crit, c_warn, c_ok = st.columns(3)
+            with c_crit: st.metric("🔴 Estado Crítico", len(df_reporte[df_reporte['Estado'] == "🔴 Crítico"]))
+            with c_warn: st.metric("🟡 Advertencia", len(df_reporte[df_reporte['Estado'] == "🟡 Advertencia"]))
+            with c_ok: st.metric("🟢 Óptimo", len(df_reporte[df_reporte['Estado'] == "🟢 Óptimo"]))
+
+            busqueda = st.text_input("🔍 Buscar código en reporte:", key="search_stock_min")
+            if busqueda:
+                df_reporte = df_reporte[df_reporte['codigo'].astype(str).str.contains(busqueda, case=False, na=False)]
+            
+            st.dataframe(
+                df_reporte, 
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'codigo': "Código", 'nombre': "Nombre", "stock_min": "Minimo",
+                    'stock_total_calc': "Actual", 'Estado': "Estado"
+                }
+            )
+        else:
+            st.warning("Sin datos de inventario.")
+
+    # === TAB 6: VENCIMIENTOS ===
+    with tab6:
+        st.subheader("⏰ Alertas de Vencimiento")
+        
+        with st.expander("⚙️ Configuración de Alertas", expanded=True):
+            col_v1, col_v2, col_v3 = st.columns(3)
+            alerta_critica = col_v1.slider("Días Críticos (🔴)", 0, 60, 3)
+            alerta_adv = col_v2.slider("Días Advertencia (🟡)", 0, 90, 7)
+            alerta_preventiva = col_v3.slider("Días Preventivos (🟠)", 0, 120, 12)
+
+        hoy = datetime.now().date()
+        alertas = []
+
+        for codigo, lotes in inventario.items():
+            for lote in lotes:
+                fv = lote.get("fecha_vencimiento")
+                estado = None
+                if fv:
+                    try:
+                        fv_date = datetime.strptime(fv, "%Y-%m-%d").date()
+                        dias_restantes = (fv_date - hoy).days
+
+                        if dias_restantes < 0: estado = 'Vencido ❌'
+                        elif dias_restantes <= alerta_critica: estado = 'Alerta Crítica 🔴'
+                        elif  dias_restantes <= alerta_adv: estado = 'Alerta Advertencia 🟡'
+                        elif dias_restantes <= alerta_preventiva: estado = 'Alerta Preventiva 🟠'
+
+                        if estado:
+                            alertas.append({
+                                'Estado': estado, 'Fecha': fv, 'Días': dias_restantes,
+                                'Nombre': lote['nombre'], 'Cantidad': lote['cantidad'], 'Código': codigo
+                            })
+                    except: pass
+
+        if alertas:
+            df_alertas = pd.DataFrame(alertas).sort_values(by='Días')
+            st.dataframe(
+                df_alertas, 
+                use_container_width=True, 
+                hide_index=True,
+                column_config={
+                    "Días": st.column_config.NumberColumn("Días Restantes", format="%d"),
+                    "Fecha": st.column_config.DateColumn("Vencimiento")
+                }
+            )
+        else:
+            st.success("✅ No hay productos próximos a vencer según los rangos seleccionados.")
 
