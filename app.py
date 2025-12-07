@@ -49,11 +49,6 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# ==========================================
-# === NUEVO BLOQUE: SISTEMA DE LOGIN ===
-# ==========================================
-
-# Usuarios definidos (puedes cambiar las contraseñas aquí)
 USUARIOS = {
     "admin": {"pass": "admin123", "rol": "administrador"},
     "empleado": {"pass": "user123", "rol": "empleado"}
@@ -795,4 +790,5 @@ if tab3:
             )
         else:
             st.success("✅ No hay productos próximos a vencer según los rangos seleccionados.")
+
 
