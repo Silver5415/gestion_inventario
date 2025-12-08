@@ -52,7 +52,7 @@ USUARIOS = {
     "empleado": {"pass": "user123", "rol": "empleado"}
 }
 
-# --- Inicialización de Session State para persistencia de datos ---
+# --- Inicialización de Session State ---
 if 'inventario' not in st.session_state:
     st.session_state.inventario = {}
 if 'stock_minimo' not in st.session_state:
@@ -61,11 +61,6 @@ if 'movimientos' not in st.session_state:
     st.session_state.movimientos = []
 if 'data_loaded' not in st.session_state:
     st.session_state.data_loaded = False
-
-# Referencias locales a session_state para mantener compatibilidad con el resto del código
-inventario = st.session_state.inventario
-stock_minimo = st.session_state.stock_minimo
-movimientos = st.session_state.movimientos
 
 def check_login():
     """Verifica credenciales y asigna estado de sesión"""
@@ -98,7 +93,7 @@ def check_login():
 if not check_login():
     st.stop()
 
-# --- Funciones de Google Sheets ---
+# --- Configuración Google Sheets ---
 
 GOOGLE_SHEET_ID = "1Zu-Dq6UCYRKMTWNsxj8FsMzzpAdtvl-qb40CVEmwl44"
 
@@ -122,7 +117,7 @@ def obtener_conexion():
         sh = gc.open_by_key(GOOGLE_SHEET_ID)
         return sh
     except Exception as e:
-        st.error(f"Error de conexión: {e}. \n\nPosibles causas:\n1. El bot no tiene permiso de 'Editor' en la hoja.\n2. La API de Google Sheets no está habilitada en Google Cloud.")
+        st.error(f"Error de conexión: {e}")
         st.stop()
 
 def check_worksheets(sh):
@@ -161,7 +156,6 @@ def _convertir_a_numero(valor, por_defecto=0):
         except (ValueError, TypeError): return por_defecto
 
 def stock_total(codigo: str) -> int:
-    # Usamos st.session_state.inventario para asegurar que leemos lo último en memoria
     return sum(l["cantidad"] for l in st.session_state.inventario.get(codigo, []))
 
 def ordenar_lotes_fifo(lotes):
@@ -185,19 +179,17 @@ def _escribir_sheet(ws_name, headers, datos):
                 fila_str = [str(celda) if celda is not None else "" for celda in fila_expandida[:len(headers)]]
                 datos_limpios.append(fila_str)
             ws.append_rows(datos_limpios, value_input_option='USER_ENTERED')
-            time.sleep(1) # Pequeña pausa para evitar saturar la API al escribir
+            time.sleep(1) # Pausa de seguridad
     except Exception as e:
         st.error(f"Error guardando en {ws_name}: {e}")
 
 def cargar_todo(force=False):
     """Carga datos desde Sheets solo si no están cargados o se fuerza."""
     if st.session_state.data_loaded and not force:
-        return # Ya tenemos datos, no gastamos cuota de API
+        return
 
-    # Limpiamos estados antes de cargar
     st.session_state.inventario.clear()
     st.session_state.stock_minimo.clear()
-    st.session_state.movimientos.clear() # Usamos clear en lugar de reasignar para mantener referencia
     del st.session_state.movimientos[:] 
 
     sh = obtener_conexion()
@@ -210,18 +202,14 @@ def cargar_todo(force=False):
             for fila in vals_inv[1:]: 
                 fila += [""] * (len(inventario_headers) - len(fila))
                 codigo, nombre, marca, cant, fv, pc, pv = fila[:len(inventario_headers)]
-                
                 if not codigo: continue
-                
                 lote = {
-                    'nombre': nombre,
-                    'marca': marca,
+                    'nombre': nombre, 'marca': marca,
                     'cantidad': _convertir_a_numero(cant),
                     'fecha_vencimiento': normalizar_fecha(fv),
                     'precio_costo': _convertir_a_numero(pc),
                     'precio_venta': _convertir_a_numero(pv)
                 }
-                
                 if codigo not in st.session_state.inventario: 
                     st.session_state.inventario[codigo] = []
                 st.session_state.inventario[codigo].append(lote)
@@ -247,8 +235,8 @@ def cargar_todo(force=False):
     st.session_state.data_loaded = True
     
 def guardar_inventario():
+    # Guarda lo que hay en session_state hacia Google Sheets
     filas = []
-    # Leemos de session_state
     for codigo, lotes in st.session_state.inventario.items():
         for d in lotes:
             filas.append([
@@ -264,10 +252,7 @@ def guardar_stock_minimo():
 def registrar_movimiento(tipo, codigo, nombre, cantidad, fecha_vencimiento, precio_costo, precio_venta):
     nueva_fila = [
         datetime.now().isoformat(timespec="seconds"),
-        tipo,
-        str(codigo),
-        nombre,
-        cantidad,
+        tipo, str(codigo), nombre, cantidad,
         fecha_vencimiento or "",
         precio_costo if precio_costo is not None else 0,
         precio_venta if precio_venta is not None else 0,
@@ -277,12 +262,12 @@ def registrar_movimiento(tipo, codigo, nombre, cantidad, fecha_vencimiento, prec
         ws = sh.worksheet(MOVIMIENTOS_WS)
         fila_str = [str(x) for x in nueva_fila]
         ws.append_row(fila_str)
+        # Actualizamos también la memoria local para que se vea en Historial sin recargar
         st.session_state.movimientos.append(nueva_fila) 
     except Exception as e:
         st.error(f"Error registrando movimiento: {e}")
 
-# --- Ejecución de carga inicial ---
-# Solo carga si no hay datos en memoria. Evita el error 429.
+# Carga inicial (solo lectura, 1 vez)
 cargar_todo(force=False)
 
 with st.sidebar:
@@ -400,6 +385,7 @@ with tab1:
             if submitted:
                 fv = normalizar_fecha(fecha_vencimiento) if aplica_vencimiento else ""
 
+                # 1. Actualizar memoria local (Session State)
                 if es_nuevo:
                     lote = {
                         'nombre': nombre, 'marca': marca, 'cantidad': cantidad,
@@ -423,12 +409,15 @@ with tab1:
                         st.session_state.stock_minimo[codigo_seleccionado] = cant_min
                         mensaje = f"Se creó un nuevo lote con {cantidad} unidades ({fv})"
 
-                guardar_inventario()
-                guardar_stock_minimo()
-                registrar_movimiento("entrada", codigo_seleccionado, nombre, cantidad, fv, precio_costo, precio_venta)
+                # 2. Guardar en Nube (Google Sheets)
+                guardar_inventario() # Escribe Inventario
+                guardar_stock_minimo() # Escribe Stock Min
+                registrar_movimiento("entrada", codigo_seleccionado, nombre, cantidad, fv, precio_costo, precio_venta) # Escribe Movimiento
+
                 st.success(mensaje) 
                 st.session_state.reset_counter += 1
-                st.rerun()
+                time.sleep(0.5)
+                st.rerun() # Actualiza la UI con los datos de memoria
 
 with tab2:
     st.subheader("📤 Registro de Salidas")
@@ -496,6 +485,7 @@ with tab2:
             st.metric("Total Items", total_items)
             
             if st.button("🚀 Confirmar Salida", type="primary"):
+                # 1. Actualizar memoria local
                 for codigo_prod, cantidad_sacar in st.session_state.lista.items():
                     if codigo_prod not in st.session_state.inventario: continue
 
@@ -509,6 +499,7 @@ with tab2:
                             toma = min(l['cantidad'], restante)
                             l['cantidad'] -= toma
                             restante -= toma
+                            # Escribe movimiento en la nube y local
                             registrar_movimiento("salida", codigo_prod, nombre_prod, toma, l.get('fecha_vencimiento',''), l.get('precio_costo'), l.get('precio_venta'))
                         if l['cantidad'] > 0:
                             lotes_finales.append(l)
@@ -518,17 +509,19 @@ with tab2:
                     else:
                         st.session_state.inventario[codigo_prod] = lotes_finales
                 
+                # 2. Guardar en Nube
                 guardar_inventario()
+                
                 st.session_state.lista = {}
                 st.success("Salidas registradas correctamente!")
+                time.sleep(0.5)
                 st.rerun() 
 
 if tab3:
     with tab3:
         st.subheader("📋 Inventario Completo")
-        
+        # Lee SOLO de memoria (session_state)
         try:
-            # Usamos los datos de memoria en vez de consultar la API
             filas = []
             for codigo, lotes in st.session_state.inventario.items():
                 for d in lotes:
@@ -578,13 +571,12 @@ if tab3:
                     "precio_venta": st.column_config.NumberColumn("Venta", format="$%d"),
                 }
             )
-            
         except Exception as e:
             st.error(f"Error cargando inventario: {e}")
 
     with tab4:
         st.subheader("📊 Historial de Movimientos")
-        
+        # Lee SOLO de memoria (session_state)
         with st.expander("🛠️ Filtros de Búsqueda", expanded=True):
             col_izq, col_der = st.columns(2)
 
@@ -673,7 +665,7 @@ if tab3:
 
     with tab5:
         st.subheader("📉 Niveles de Stock")
-
+        # Lee SOLO de memoria (session_state)
         data_rows = []
         for c, lotes in st.session_state.inventario.items():
             if lotes:
@@ -727,7 +719,7 @@ if tab3:
             
     with tab6:
         st.subheader("⏰ Alertas de Vencimiento")
-        
+        # Lee SOLO de memoria (session_state)
         with st.expander("⚙️ Configuración de Alertas", expanded=True):
             col_v1, col_v2, col_v3 = st.columns(3)
             alerta_critica = col_v1.slider("Días Críticos (🔴)", 0, 60, 3)
