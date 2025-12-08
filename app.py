@@ -35,7 +35,6 @@ st.markdown("""
     div[data-testid="stMetricValue"] {
         font-size: 1.5rem;
     }
-    /* NUEVO: Estilo para el login */
     .login-container {
         padding: 30px; 
         border-radius: 10px; 
@@ -83,14 +82,39 @@ def check_login():
 if not check_login():
     st.stop()
 
+# --- INICIALIZACIÓN DE ESTADO (SOLUCIÓN 2) ---
+# Inicializamos las variables en session_state para que persistan en memoria
+# y no tengamos que llamar a la API cada vez que se recarga la página.
+if 'inventario' not in st.session_state:
+    st.session_state.inventario = {}
+if 'stock_minimo' not in st.session_state:
+    st.session_state.stock_minimo = {}
+if 'movimientos' not in st.session_state:
+    st.session_state.movimientos = []
+if 'data_loaded' not in st.session_state:
+    st.session_state.data_loaded = False
+
+# Creamos alias locales para facilitar la lectura del código, 
+# pero estos apuntan directamente a la memoria de sesión.
+inventario = st.session_state.inventario
+stock_minimo = st.session_state.stock_minimo
+movimientos = st.session_state.movimientos
+
 with st.sidebar:
     st.write(f"👤 **{st.session_state.usuario_actual}**")
     st.write(f"🔑 **Rol:** {st.session_state.rol}")
+    
+    # Botón manual para forzar la actualización desde la nube
+    if st.button("🔄 Actualizar Datos"):
+        st.session_state.data_loaded = False # Forzará la recarga
+        st.rerun()
+        
+    st.divider()
     if st.button("Cerrar Sesión"):
         st.session_state.logged_in = False
         st.session_state.rol = None
+        st.session_state.data_loaded = False
         st.rerun()
-
 
 st.title("📦 Sistema de Gestión de Inventario B&M")
 st.markdown("---")
@@ -105,39 +129,30 @@ inventario_headers = ["codigo", "nombre", "marca", "cantidad", "fecha_vencimient
 stock_minimo_headers = ['codigo', 'stock_min']
 movimientos_headers = ["timestamp", "tipo", "codigo", "nombre", "cantidad", "fecha_vencimiento", "precio_costo", "precio_venta"]
 
-inventario = {}
-stock_minimo = {}
-movimientos = []
-
 @st.cache_resource(ttl=3600)
 def obtener_conexion():
     """Conecta con Google Sheets usando st.secrets"""
     try:
         credentials = dict(st.secrets["gcp_service_account"])
-        
         if "private_key" in credentials:
             credentials["private_key"] = credentials["private_key"].replace("\\n", "\n")
-        
         gc = gspread.service_account_from_dict(credentials)
         sh = gc.open_by_key(GOOGLE_SHEET_ID)
         return sh
     except Exception as e:
-        st.error(f"Error de conexión: {e}. \n\nPosibles causas:\n1. El bot no tiene permiso de 'Editor' en la hoja.\n2. La API de Google Sheets no está habilitada en Google Cloud.")
+        st.error(f"Error de conexión: {e}")
         st.stop()
 
 def check_worksheets(sh):
     """Asegura que las pestañas existan y tengan headers"""
     try:
         titulos_actuales = [ws.title for ws in sh.worksheets()]
-        
         if INVENTARIO_WS not in titulos_actuales:
             ws = sh.add_worksheet(title=INVENTARIO_WS, rows=100, cols=10)
             ws.append_row(inventario_headers)
-            
         if STOCK_MINIMO_WS not in titulos_actuales:
             ws = sh.add_worksheet(title=STOCK_MINIMO_WS, rows=100, cols=5)
             ws.append_row(stock_minimo_headers)
-            
         if MOVIMIENTOS_WS not in titulos_actuales:
             ws = sh.add_worksheet(title=MOVIMIENTOS_WS, rows=100, cols=10)
             ws.append_row(movimientos_headers)
@@ -152,10 +167,8 @@ def normalizar_fecha(fecha_obj) -> str:
             if ' ' in fecha_obj: fecha_obj = fecha_obj.split(' ')[0]
             if 'T' in fecha_obj: fecha_obj = fecha_obj.split('T')[0]
             return fecha_obj
-        
         if hasattr(fecha_obj, 'strftime'):
             return fecha_obj.strftime("%Y-%m-%d")
-        
         return str(fecha_obj).split(' ')[0]
     except: return ""
 
@@ -167,17 +180,15 @@ def _convertir_a_numero(valor, por_defecto=0):
         except (ValueError, TypeError): return por_defecto
 
 def stock_total(codigo: str) -> int:
+    # Lee directamente de la memoria local, no consume cuota API
     return sum(l["cantidad"] for l in inventario.get(codigo, []))
 
 def ordenar_lotes_fifo(lotes):
     def clave(l):
         fv = l.get("fecha_vencimiento", "")
-        if not fv:
-            return (datetime.max, 1)
-        try:
-            return (datetime.fromisoformat(fv), 0)
-        except Exception:
-            return (datetime.max, 1)
+        if not fv: return (datetime.max, 1)
+        try: return (datetime.fromisoformat(fv), 0)
+        except Exception: return (datetime.max, 1)
     return sorted(lotes, key=clave)
 
 def _escribir_sheet(ws_name, headers, datos):
@@ -193,16 +204,16 @@ def _escribir_sheet(ws_name, headers, datos):
                 fila_expandida = list(fila) + ["" for _ in range(len(headers) - len(fila))]
                 fila_str = [str(celda) if celda is not None else "" for celda in fila_expandida[:len(headers)]]
                 datos_limpios.append(fila_str)
-
             ws.append_rows(datos_limpios, value_input_option='USER_ENTERED')
     except Exception as e:
         st.error(f"Error guardando en {ws_name}: {e}")
 
-def cargar_todo():
-    """Carga datos desde Sheets a memoria. Se ejecuta en cada run de Streamlit."""
-    inventario.clear()
-    stock_minimo.clear()
-    movimientos.clear()
+def cargar_todo_desde_nube():
+    """Carga datos desde Sheets a memoria session_state."""
+    # Limpiamos los diccionarios en memoria antes de rellenar
+    st.session_state.inventario.clear()
+    st.session_state.stock_minimo.clear()
+    del st.session_state.movimientos[:] # Limpieza de lista
     
     sh = obtener_conexion()
     check_worksheets(sh)
@@ -226,8 +237,9 @@ def cargar_todo():
                     'precio_venta': _convertir_a_numero(pv)
                 }
                 
-                if codigo not in inventario: inventario[codigo] = []
-                inventario[codigo].append(lote)
+                if codigo not in st.session_state.inventario: 
+                    st.session_state.inventario[codigo] = []
+                st.session_state.inventario[codigo].append(lote)
     except Exception as e: st.error(f"Error leyendo inventario: {e}")
 
     try:
@@ -236,7 +248,7 @@ def cargar_todo():
         if len(vals_min) > 1:
             for fila in vals_min[1:]:
                 if fila and fila[0]:
-                    stock_minimo[fila[0]] = _convertir_a_numero(fila[1] if len(fila)>1 else 0)
+                    st.session_state.stock_minimo[fila[0]] = _convertir_a_numero(fila[1] if len(fila)>1 else 0)
     except Exception as e: st.error(f"Error leyendo stock minimo: {e}")
 
     try:
@@ -244,12 +256,13 @@ def cargar_todo():
         vals_mov = ws_mov.get_all_values()
         if len(vals_mov) > 1:
             for fila in vals_mov[1:]:
-                movimientos.append(fila[:len(movimientos_headers)])
+                st.session_state.movimientos.append(fila[:len(movimientos_headers)])
     except Exception as e: st.error(f"Error leyendo movimientos: {e}")
     
-    st.session_state['data_loaded'] = True
+    st.session_state.data_loaded = True
     
 def guardar_inventario():
+    # Guarda lo que está en memoria (session_state) a la nube
     filas = []
     for codigo, lotes in inventario.items():
         for d in lotes:
@@ -279,14 +292,15 @@ def registrar_movimiento(tipo, codigo, nombre, cantidad, fecha_vencimiento, prec
         ws = sh.worksheet(MOVIMIENTOS_WS)
         fila_str = [str(x) for x in nueva_fila]
         ws.append_row(fila_str)
-        movimientos.append(nueva_fila) 
+        # También actualizamos la memoria local
+        st.session_state.movimientos.append(nueva_fila) 
     except Exception as e:
         st.error(f"Error registrando movimiento: {e}")
         
-if 'data_loaded' not in st.session_state:
-    cargar_todo()
-else:
-    cargar_todo()
+# --- LÓGICA DE CARGA ÚNICA ---
+if not st.session_state.data_loaded:
+    with st.spinner("Cargando base de datos desde la nube..."):
+        cargar_todo_desde_nube()
 
 tab1, tab2, tab3, tab4, tab5, tab6 = None, None, None, None, None, None
 
@@ -340,6 +354,7 @@ with tab1:
             codigo_seleccionado = entrada
 
     if codigo_seleccionado:
+        # Busca en memoria local (rápido, sin API)
         es_nuevo = codigo_seleccionado not in inventario
         no_tiene_min = codigo_seleccionado not in stock_minimo or stock_minimo[codigo_seleccionado] is None
         
@@ -389,6 +404,7 @@ with tab1:
                         'nombre': nombre, 'marca': marca, 'cantidad': cantidad,
                         'fecha_vencimiento': fv, 'precio_costo': precio_costo, 'precio_venta': precio_venta
                     }
+                    # Actualiza memoria local inmediatamente
                     inventario[codigo_seleccionado] = [lote]
                     stock_minimo[codigo_seleccionado] = cant_min
                     mensaje = f'Producto {nombre} creado con éxito'
@@ -407,6 +423,7 @@ with tab1:
                         stock_minimo[codigo_seleccionado] = cant_min
                         mensaje = f"Se creó un nuevo lote con {cantidad} unidades ({fv})"
 
+                # Sincroniza con la nube (Escritura)
                 guardar_inventario()
                 guardar_stock_minimo()
                 registrar_movimiento("entrada", codigo_seleccionado, nombre, cantidad, fv, precio_costo, precio_venta)
@@ -426,24 +443,20 @@ with tab2:
     def procesar_codigo_escaneado():
         codigo_leido = st.session_state.input_salida_codigo
         if not codigo_leido: return
-        
-        # Limpiar input inmediatamente para UX
         st.session_state.input_salida_codigo = ""
         codigo = codigo_leido.strip()
         
+        # Validación contra memoria local (Rápido y sin API)
         if codigo not in inventario:
             st.toast(f"❌ El código {codigo} no existe")
             return
 
-        # Establecer producto pendiente para mostrar el formulario de cantidad
         st.session_state.producto_pendiente_salida = codigo
 
-    # Input de escaneo
     st.text_input("🔢 Escanee código para agregar a salida:", 
                   key="input_salida_codigo", 
                   on_change=procesar_codigo_escaneado)
 
-    # Bloque de selección de cantidad si hay un producto pendiente
     if st.session_state.producto_pendiente_salida:
         cod_pend = st.session_state.producto_pendiente_salida
         
@@ -504,7 +517,6 @@ with tab2:
                 if codigo in inventario:
                     nombre = inventario[codigo][0]['nombre']
                     marca = inventario[codigo][0]['marca']
-                    
                     col_det, col_btn = st.columns([0.8, 0.2])
                     with col_det:
                         st.markdown(f"**{nombre}** ({marca}): `{cant_lista}` un.")
@@ -540,11 +552,13 @@ with tab2:
                         if l['cantidad'] > 0:
                             lotes_finales.append(l)
                     
+                    # Actualización en memoria local
                     if not lotes_finales:
                         if codigo_prod in inventario: del inventario[codigo_prod]
                     else:
                         inventario[codigo_prod] = lotes_finales
                 
+                # Sincronización con la nube (Solo escritura)
                 guardar_inventario()
                 st.session_state.lista = {}
                 st.success("Salidas registradas correctamente!")
@@ -554,55 +568,55 @@ if tab3:
     with tab3:
         st.subheader("📋 Inventario Completo")
         
-        try:
-            sh = obtener_conexion()
-            ws_inv = sh.worksheet(INVENTARIO_WS)
-            data = ws_inv.get_all_values()
-            
-            if len(data) > 1:
-                df_inv = pd.DataFrame(data[1:], columns=data[0])
-                df_inv['cantidad'] = df_inv['cantidad'].apply(_convertir_a_numero)
-            else:
-                st.warning("Inventario vacío.")
-                df_inv = pd.DataFrame(columns=inventario_headers)
+        # Generar DataFrame desde memoria local (Sin API)
+        filas_data = []
+        for cod, lotes in inventario.items():
+            for l in lotes:
+                filas_data.append([
+                    cod, l['nombre'], l['marca'], l['cantidad'], 
+                    l['fecha_vencimiento'], l['precio_costo'], l['precio_venta']
+                ])
+        
+        if filas_data:
+            df_inv = pd.DataFrame(filas_data, columns=inventario_headers)
+        else:
+            st.warning("Inventario vacío.")
+            df_inv = pd.DataFrame(columns=inventario_headers)
 
-            c_search, c_metric1, c_metric2 = st.columns([2, 1, 1])
-            with c_search:
-                busqueda = st.text_input("🔍 Buscar en inventario:", key="search_inv", placeholder="Nombre, Marca o Código...")
-            
-            if busqueda:
-                busqueda_lower = busqueda.lower()
-                filtro = (df_inv['codigo'].astype(str).str.contains(busqueda_lower, case=False, na=False)) | \
-                        (df_inv['nombre'].astype(str).str.contains(busqueda_lower, case=False, na=False)) | \
-                        (df_inv['marca'].astype(str).str.contains(busqueda_lower, case=False, na=False))
-                df_filtrado = df_inv[filtro]
-            else:
-                df_filtrado = df_inv
+        c_search, c_metric1, c_metric2 = st.columns([2, 1, 1])
+        with c_search:
+            busqueda = st.text_input("🔍 Buscar en inventario:", key="search_inv", placeholder="Nombre, Marca o Código...")
+        
+        if busqueda:
+            busqueda_lower = busqueda.lower()
+            filtro = (df_inv['codigo'].astype(str).str.contains(busqueda_lower, case=False, na=False)) | \
+                    (df_inv['nombre'].astype(str).str.contains(busqueda_lower, case=False, na=False)) | \
+                    (df_inv['marca'].astype(str).str.contains(busqueda_lower, case=False, na=False))
+            df_filtrado = df_inv[filtro]
+        else:
+            df_filtrado = df_inv
 
-            with c_metric1:
-                st.metric("Total Productos", len(df_filtrado))
-            with c_metric2:
-                total_stock_view = df_filtrado['cantidad'].sum() if not df_filtrado.empty else 0
-                st.metric("Stock Total Unidades", total_stock_view)
-            
-            st.dataframe(
-                df_filtrado, 
-                use_container_width=True,
-                height=500,
-                hide_index=True,
-                column_config={
-                    'codigo': st.column_config.TextColumn("Código"),
-                    'nombre': st.column_config.TextColumn("Nombre"),
-                    'marca': st.column_config.TextColumn("Marca"),
-                    "fecha_vencimiento": st.column_config.TextColumn("Vencimiento", width="medium"),
-                    "cantidad": st.column_config.NumberColumn("Stock", format="%d"),
-                    "precio_costo": st.column_config.NumberColumn("Costo", format="$%d"),
-                    "precio_venta": st.column_config.NumberColumn("Venta", format="$%d"),
-                }
-            )
-            
-        except Exception as e:
-            st.error(f"Error cargando inventario: {e}")
+        with c_metric1:
+            st.metric("Total Productos", len(df_filtrado))
+        with c_metric2:
+            total_stock_view = df_filtrado['cantidad'].sum() if not df_filtrado.empty else 0
+            st.metric("Stock Total Unidades", total_stock_view)
+        
+        st.dataframe(
+            df_filtrado, 
+            use_container_width=True,
+            height=500,
+            hide_index=True,
+            column_config={
+                'codigo': st.column_config.TextColumn("Código"),
+                'nombre': st.column_config.TextColumn("Nombre"),
+                'marca': st.column_config.TextColumn("Marca"),
+                "fecha_vencimiento": st.column_config.TextColumn("Vencimiento", width="medium"),
+                "cantidad": st.column_config.NumberColumn("Stock", format="%d"),
+                "precio_costo": st.column_config.NumberColumn("Costo", format="$%d"),
+                "precio_venta": st.column_config.NumberColumn("Venta", format="$%d"),
+            }
+        )
 
     with tab4:
         st.subheader("📊 Historial de Movimientos")
@@ -611,6 +625,7 @@ if tab3:
             col_izq, col_der = st.columns(2)
 
             with col_izq:
+                # Construir lista desde memoria
                 productos_lista = []
                 for codigo, lotes in inventario.items():
                     if lotes:
