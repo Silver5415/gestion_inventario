@@ -4,6 +4,7 @@ import gspread
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import numpy as np
+import time
 
 st.set_page_config(
     layout="wide", 
@@ -35,7 +36,6 @@ st.markdown("""
     div[data-testid="stMetricValue"] {
         font-size: 1.5rem;
     }
-    /* NUEVO: Estilo para el login */
     .login-container {
         padding: 30px; 
         border-radius: 10px; 
@@ -51,6 +51,21 @@ USUARIOS = {
     "admin": {"pass": "admin123", "rol": "administrador"},
     "empleado": {"pass": "user123", "rol": "empleado"}
 }
+
+# --- Inicialización de Session State para persistencia de datos ---
+if 'inventario' not in st.session_state:
+    st.session_state.inventario = {}
+if 'stock_minimo' not in st.session_state:
+    st.session_state.stock_minimo = {}
+if 'movimientos' not in st.session_state:
+    st.session_state.movimientos = []
+if 'data_loaded' not in st.session_state:
+    st.session_state.data_loaded = False
+
+# Referencias locales a session_state para mantener compatibilidad con el resto del código
+inventario = st.session_state.inventario
+stock_minimo = st.session_state.stock_minimo
+movimientos = st.session_state.movimientos
 
 def check_login():
     """Verifica credenciales y asigna estado de sesión"""
@@ -83,17 +98,7 @@ def check_login():
 if not check_login():
     st.stop()
 
-with st.sidebar:
-    st.write(f"👤 **{st.session_state.usuario_actual}**")
-    st.write(f"🔑 **Rol:** {st.session_state.rol}")
-    if st.button("Cerrar Sesión"):
-        st.session_state.logged_in = False
-        st.session_state.rol = None
-        st.rerun()
-
-
-st.title("📦 Sistema de Gestión de Inventario B&M")
-st.markdown("---")
+# --- Funciones de Google Sheets ---
 
 GOOGLE_SHEET_ID = "1Zu-Dq6UCYRKMTWNsxj8FsMzzpAdtvl-qb40CVEmwl44"
 
@@ -105,16 +110,11 @@ inventario_headers = ["codigo", "nombre", "marca", "cantidad", "fecha_vencimient
 stock_minimo_headers = ['codigo', 'stock_min']
 movimientos_headers = ["timestamp", "tipo", "codigo", "nombre", "cantidad", "fecha_vencimiento", "precio_costo", "precio_venta"]
 
-inventario = {}
-stock_minimo = {}
-movimientos = []
-
 @st.cache_resource(ttl=3600)
 def obtener_conexion():
     """Conecta con Google Sheets usando st.secrets"""
     try:
         credentials = dict(st.secrets["gcp_service_account"])
-        
         if "private_key" in credentials:
             credentials["private_key"] = credentials["private_key"].replace("\\n", "\n")
         
@@ -126,18 +126,14 @@ def obtener_conexion():
         st.stop()
 
 def check_worksheets(sh):
-    """Asegura que las pestañas existan y tengan headers"""
     try:
         titulos_actuales = [ws.title for ws in sh.worksheets()]
-        
         if INVENTARIO_WS not in titulos_actuales:
             ws = sh.add_worksheet(title=INVENTARIO_WS, rows=100, cols=10)
             ws.append_row(inventario_headers)
-            
         if STOCK_MINIMO_WS not in titulos_actuales:
             ws = sh.add_worksheet(title=STOCK_MINIMO_WS, rows=100, cols=5)
             ws.append_row(stock_minimo_headers)
-            
         if MOVIMIENTOS_WS not in titulos_actuales:
             ws = sh.add_worksheet(title=MOVIMIENTOS_WS, rows=100, cols=10)
             ws.append_row(movimientos_headers)
@@ -152,10 +148,8 @@ def normalizar_fecha(fecha_obj) -> str:
             if ' ' in fecha_obj: fecha_obj = fecha_obj.split(' ')[0]
             if 'T' in fecha_obj: fecha_obj = fecha_obj.split('T')[0]
             return fecha_obj
-        
         if hasattr(fecha_obj, 'strftime'):
             return fecha_obj.strftime("%Y-%m-%d")
-        
         return str(fecha_obj).split(' ')[0]
     except: return ""
 
@@ -167,21 +161,18 @@ def _convertir_a_numero(valor, por_defecto=0):
         except (ValueError, TypeError): return por_defecto
 
 def stock_total(codigo: str) -> int:
-    return sum(l["cantidad"] for l in inventario.get(codigo, []))
+    # Usamos st.session_state.inventario para asegurar que leemos lo último en memoria
+    return sum(l["cantidad"] for l in st.session_state.inventario.get(codigo, []))
 
 def ordenar_lotes_fifo(lotes):
     def clave(l):
         fv = l.get("fecha_vencimiento", "")
-        if not fv:
-            return (datetime.max, 1)
-        try:
-            return (datetime.fromisoformat(fv), 0)
-        except Exception:
-            return (datetime.max, 1)
+        if not fv: return (datetime.max, 1)
+        try: return (datetime.fromisoformat(fv), 0)
+        except Exception: return (datetime.max, 1)
     return sorted(lotes, key=clave)
 
 def _escribir_sheet(ws_name, headers, datos):
-    """Sobreescribe una pestaña completa con nuevos datos"""
     try:
         sh = obtener_conexion()
         ws = sh.worksheet(ws_name)
@@ -193,17 +184,22 @@ def _escribir_sheet(ws_name, headers, datos):
                 fila_expandida = list(fila) + ["" for _ in range(len(headers) - len(fila))]
                 fila_str = [str(celda) if celda is not None else "" for celda in fila_expandida[:len(headers)]]
                 datos_limpios.append(fila_str)
-
             ws.append_rows(datos_limpios, value_input_option='USER_ENTERED')
+            time.sleep(1) # Pequeña pausa para evitar saturar la API al escribir
     except Exception as e:
         st.error(f"Error guardando en {ws_name}: {e}")
 
-def cargar_todo():
-    """Carga datos desde Sheets a memoria. Se ejecuta en cada run de Streamlit."""
-    inventario.clear()
-    stock_minimo.clear()
-    movimientos.clear()
-    
+def cargar_todo(force=False):
+    """Carga datos desde Sheets solo si no están cargados o se fuerza."""
+    if st.session_state.data_loaded and not force:
+        return # Ya tenemos datos, no gastamos cuota de API
+
+    # Limpiamos estados antes de cargar
+    st.session_state.inventario.clear()
+    st.session_state.stock_minimo.clear()
+    st.session_state.movimientos.clear() # Usamos clear en lugar de reasignar para mantener referencia
+    del st.session_state.movimientos[:] 
+
     sh = obtener_conexion()
     check_worksheets(sh)
     
@@ -211,7 +207,7 @@ def cargar_todo():
         ws_inv = sh.worksheet(INVENTARIO_WS)
         vals_inv = ws_inv.get_all_values()
         if len(vals_inv) > 1:
-            for fila in vals_inv[1:]: # Saltar header
+            for fila in vals_inv[1:]: 
                 fila += [""] * (len(inventario_headers) - len(fila))
                 codigo, nombre, marca, cant, fv, pc, pv = fila[:len(inventario_headers)]
                 
@@ -226,8 +222,9 @@ def cargar_todo():
                     'precio_venta': _convertir_a_numero(pv)
                 }
                 
-                if codigo not in inventario: inventario[codigo] = []
-                inventario[codigo].append(lote)
+                if codigo not in st.session_state.inventario: 
+                    st.session_state.inventario[codigo] = []
+                st.session_state.inventario[codigo].append(lote)
     except Exception as e: st.error(f"Error leyendo inventario: {e}")
 
     try:
@@ -236,7 +233,7 @@ def cargar_todo():
         if len(vals_min) > 1:
             for fila in vals_min[1:]:
                 if fila and fila[0]:
-                    stock_minimo[fila[0]] = _convertir_a_numero(fila[1] if len(fila)>1 else 0)
+                    st.session_state.stock_minimo[fila[0]] = _convertir_a_numero(fila[1] if len(fila)>1 else 0)
     except Exception as e: st.error(f"Error leyendo stock minimo: {e}")
 
     try:
@@ -244,14 +241,15 @@ def cargar_todo():
         vals_mov = ws_mov.get_all_values()
         if len(vals_mov) > 1:
             for fila in vals_mov[1:]:
-                movimientos.append(fila[:len(movimientos_headers)])
+                st.session_state.movimientos.append(fila[:len(movimientos_headers)])
     except Exception as e: st.error(f"Error leyendo movimientos: {e}")
     
-    st.session_state['data_loaded'] = True
+    st.session_state.data_loaded = True
     
 def guardar_inventario():
     filas = []
-    for codigo, lotes in inventario.items():
+    # Leemos de session_state
+    for codigo, lotes in st.session_state.inventario.items():
         for d in lotes:
             filas.append([
                 codigo, d.get('nombre',""), d.get('marca',""), d.get('cantidad',0),
@@ -260,7 +258,7 @@ def guardar_inventario():
     _escribir_sheet(INVENTARIO_WS, inventario_headers, filas)
 
 def guardar_stock_minimo():
-    filas = [[k, v] for k, v in stock_minimo.items()]
+    filas = [[k, v] for k, v in st.session_state.stock_minimo.items()]
     _escribir_sheet(STOCK_MINIMO_WS, stock_minimo_headers, filas)
 
 def registrar_movimiento(tipo, codigo, nombre, cantidad, fecha_vencimiento, precio_costo, precio_venta):
@@ -279,14 +277,32 @@ def registrar_movimiento(tipo, codigo, nombre, cantidad, fecha_vencimiento, prec
         ws = sh.worksheet(MOVIMIENTOS_WS)
         fila_str = [str(x) for x in nueva_fila]
         ws.append_row(fila_str)
-        movimientos.append(nueva_fila) 
+        st.session_state.movimientos.append(nueva_fila) 
     except Exception as e:
         st.error(f"Error registrando movimiento: {e}")
-        
-if 'data_loaded' not in st.session_state:
-    cargar_todo()
-else:
-    cargar_todo()
+
+# --- Ejecución de carga inicial ---
+# Solo carga si no hay datos en memoria. Evita el error 429.
+cargar_todo(force=False)
+
+with st.sidebar:
+    st.write(f"👤 **{st.session_state.usuario_actual}**")
+    st.write(f"🔑 **Rol:** {st.session_state.rol}")
+    
+    if st.button("🔄 Forzar Recarga"):
+        st.session_state.data_loaded = False
+        cargar_todo(force=True)
+        st.success("Datos actualizados desde la nube")
+        time.sleep(1)
+        st.rerun()
+
+    if st.button("Cerrar Sesión"):
+        st.session_state.logged_in = False
+        st.session_state.rol = None
+        st.rerun()
+
+st.title("📦 Sistema de Gestión de Inventario B&M")
+st.markdown("---")
 
 tab1, tab2, tab3, tab4, tab5, tab6 = None, None, None, None, None, None
 
@@ -315,7 +331,7 @@ with tab1:
     if entrada:
         if entrada.lower() == 'buscar':
             productos_lista = []
-            for codigo, lotes in inventario.items():
+            for codigo, lotes in st.session_state.inventario.items():
                 if lotes:
                     base = lotes[0]
                     nombre = base.get('nombre') or 'N/A'
@@ -340,24 +356,24 @@ with tab1:
             codigo_seleccionado = entrada
 
     if codigo_seleccionado:
-        es_nuevo = codigo_seleccionado not in inventario
-        no_tiene_min = codigo_seleccionado not in stock_minimo or stock_minimo[codigo_seleccionado] is None
+        es_nuevo = codigo_seleccionado not in st.session_state.inventario
+        no_tiene_min = codigo_seleccionado not in st.session_state.stock_minimo or st.session_state.stock_minimo[codigo_seleccionado] is None
         
         st.markdown("---")
         if es_nuevo:
             st.info(f"🆕 El código **{codigo_seleccionado}** es nuevo. Complete los datos.")
         else:
-            base = inventario[codigo_seleccionado][0]
+            base = st.session_state.inventario[codigo_seleccionado][0]
             st.success(f"📦 Editando: **{base.get('nombre')}** ({base.get('marca')})")
         
         with st.form("form_entrada", clear_on_submit = True):
             c1, c2 = st.columns(2)
             
-            nombre_def = '' if es_nuevo else inventario[codigo_seleccionado][0].get('nombre', '')
-            marca_def = '' if es_nuevo else inventario[codigo_seleccionado][0].get('marca', '')
-            pc_def = 0 if es_nuevo else inventario[codigo_seleccionado][0].get('precio_costo', 0)
-            pv_def = 0 if es_nuevo else inventario[codigo_seleccionado][0].get('precio_venta', 0)
-            cant_min_def = 0 if no_tiene_min else stock_minimo[codigo_seleccionado]
+            nombre_def = '' if es_nuevo else st.session_state.inventario[codigo_seleccionado][0].get('nombre', '')
+            marca_def = '' if es_nuevo else st.session_state.inventario[codigo_seleccionado][0].get('marca', '')
+            pc_def = 0 if es_nuevo else st.session_state.inventario[codigo_seleccionado][0].get('precio_costo', 0)
+            pv_def = 0 if es_nuevo else st.session_state.inventario[codigo_seleccionado][0].get('precio_venta', 0)
+            cant_min_def = 0 if no_tiene_min else st.session_state.stock_minimo[codigo_seleccionado]
             
             with c1:
                 st.markdown("**Datos del Producto**")
@@ -389,11 +405,11 @@ with tab1:
                         'nombre': nombre, 'marca': marca, 'cantidad': cantidad,
                         'fecha_vencimiento': fv, 'precio_costo': precio_costo, 'precio_venta': precio_venta
                     }
-                    inventario[codigo_seleccionado] = [lote]
-                    stock_minimo[codigo_seleccionado] = cant_min
+                    st.session_state.inventario[codigo_seleccionado] = [lote]
+                    st.session_state.stock_minimo[codigo_seleccionado] = cant_min
                     mensaje = f'Producto {nombre} creado con éxito'
                 else:
-                    lotes = inventario[codigo_seleccionado]
+                    lotes = st.session_state.inventario[codigo_seleccionado]
                     lote_existente = next((l for l in lotes if l.get("fecha_vencimiento", "") == fv), None)
 
                     if lote_existente:
@@ -404,7 +420,7 @@ with tab1:
                             'nombre': nombre, 'marca': marca, 'cantidad': cantidad,
                             'fecha_vencimiento': fv, 'precio_costo': precio_costo, 'precio_venta': precio_venta
                         })
-                        stock_minimo[codigo_seleccionado] = cant_min
+                        st.session_state.stock_minimo[codigo_seleccionado] = cant_min
                         mensaje = f"Se creó un nuevo lote con {cantidad} unidades ({fv})"
 
                 guardar_inventario()
@@ -438,7 +454,7 @@ with tab2:
             codigo_producto = codigo_sin_procesar.strip()
             cantidad = 1
         
-        if codigo_producto not in inventario:
+        if codigo_producto not in st.session_state.inventario:
             st.toast(f"❌ El {codigo_producto} no existe")
             st.session_state.codigo = ""
             return
@@ -469,9 +485,9 @@ with tab2:
             st.info("El carrito está vacío.")
         else:
             for codigo, cant_lista in st.session_state.lista.items():
-                if codigo in inventario:
-                    nombre = inventario[codigo][0]['nombre']
-                    marca = inventario[codigo][0]['marca']
+                if codigo in st.session_state.inventario:
+                    nombre = st.session_state.inventario[codigo][0]['nombre']
+                    marca = st.session_state.inventario[codigo][0]['marca']
                     st.markdown(f"- **{nombre}** ({marca}): `{cant_lista}` unidades")
     
     with c_resumen:
@@ -481,9 +497,9 @@ with tab2:
             
             if st.button("🚀 Confirmar Salida", type="primary"):
                 for codigo_prod, cantidad_sacar in st.session_state.lista.items():
-                    if codigo_prod not in inventario: continue
+                    if codigo_prod not in st.session_state.inventario: continue
 
-                    lotes_a_modificar = ordenar_lotes_fifo(inventario[codigo_prod])
+                    lotes_a_modificar = ordenar_lotes_fifo(st.session_state.inventario[codigo_prod])
                     restante = cantidad_sacar
                     nombre_prod = lotes_a_modificar[0]['nombre']
 
@@ -498,9 +514,9 @@ with tab2:
                             lotes_finales.append(l)
                     
                     if not lotes_finales:
-                        if codigo_prod in inventario: del inventario[codigo_prod]
+                        if codigo_prod in st.session_state.inventario: del st.session_state.inventario[codigo_prod]
                     else:
-                        inventario[codigo_prod] = lotes_finales
+                        st.session_state.inventario[codigo_prod] = lotes_finales
                 
                 guardar_inventario()
                 st.session_state.lista = {}
@@ -512,13 +528,18 @@ if tab3:
         st.subheader("📋 Inventario Completo")
         
         try:
-            sh = obtener_conexion()
-            ws_inv = sh.worksheet(INVENTARIO_WS)
-            data = ws_inv.get_all_values()
+            # Usamos los datos de memoria en vez de consultar la API
+            filas = []
+            for codigo, lotes in st.session_state.inventario.items():
+                for d in lotes:
+                    filas.append({
+                        "codigo": codigo, "nombre": d.get('nombre'), "marca": d.get('marca'), 
+                        "cantidad": d.get('cantidad'), "fecha_vencimiento": d.get('fecha_vencimiento'),
+                        "precio_costo": d.get('precio_costo'), "precio_venta": d.get('precio_venta')
+                    })
             
-            if len(data) > 1:
-                df_inv = pd.DataFrame(data[1:], columns=data[0])
-                df_inv['cantidad'] = df_inv['cantidad'].apply(_convertir_a_numero)
+            if filas:
+                df_inv = pd.DataFrame(filas)
             else:
                 st.warning("Inventario vacío.")
                 df_inv = pd.DataFrame(columns=inventario_headers)
@@ -569,7 +590,7 @@ if tab3:
 
             with col_izq:
                 productos_lista = []
-                for codigo, lotes in inventario.items():
+                for codigo, lotes in st.session_state.inventario.items():
                     if lotes:
                         base = lotes[0]
                         nombre = base.get('nombre') or 'N/A'
@@ -587,7 +608,6 @@ if tab3:
                     idx = opciones.index(seleccion) - 2
                     codigo_seleccionado = productos_lista[idx][0]
                 
-                # CAMBIO: Selectbox en lugar de multiselect
                 tipo_movimiento = st.selectbox("Tipo:", ["Todos", "entrada", "salida"], key="tipo_movimiento")
 
             with col_der:
@@ -599,11 +619,11 @@ if tab3:
                 btn_filtrar = st.button("🔎 Buscar Movimientos", type="primary")
 
         if btn_filtrar:
-            if not movimientos:
+            if not st.session_state.movimientos:
                 st.info("No hay movimientos registrados.")
             else:
                 try:
-                    df = pd.DataFrame(movimientos, columns=movimientos_headers)
+                    df = pd.DataFrame(st.session_state.movimientos, columns=movimientos_headers)
                     df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
                     
                     fecha_inicio = pd.to_datetime(fecha_inicio)
@@ -612,7 +632,6 @@ if tab3:
                     df_filtrado = df.loc[(df["timestamp"] >= fecha_inicio) & (df["timestamp"] < fecha_fin)].copy()
                     df_filtrado['cantidad'] = df_filtrado['cantidad'].apply(_convertir_a_numero)
 
-                    # CAMBIO: Lógica de filtrado para selectbox
                     if tipo_movimiento != "Todos":
                         df_filtrado = df_filtrado[df_filtrado['tipo'] == tipo_movimiento]
 
@@ -622,7 +641,6 @@ if tab3:
                     c_graf, c_tabla = st.columns([1, 1])
                     
                     with c_graf:
-                        # CAMBIO: Lógica de gráficos para selectbox
                         if tipo_movimiento == "Todos" or tipo_movimiento == "entrada":
                             df_e = df_filtrado[df_filtrado['tipo'] == 'entrada']
                             if not df_e.empty:
@@ -657,7 +675,7 @@ if tab3:
         st.subheader("📉 Niveles de Stock")
 
         data_rows = []
-        for c, lotes in inventario.items():
+        for c, lotes in st.session_state.inventario.items():
             if lotes:
                 base = lotes[0]
                 data_rows.append({
@@ -665,7 +683,7 @@ if tab3:
                 })
         df_inv_sin_lotes = pd.DataFrame(data_rows)
         
-        df_stock_min = pd.DataFrame(list(stock_minimo.items()), columns=['codigo', 'stock_min'])
+        df_stock_min = pd.DataFrame(list(st.session_state.stock_minimo.items()), columns=['codigo', 'stock_min'])
         df_stock_min['stock_min'] = df_stock_min['stock_min'].apply(_convertir_a_numero)
         
         if not df_inv_sin_lotes.empty:
@@ -719,7 +737,7 @@ if tab3:
         hoy = datetime.now().date()
         alertas = []
 
-        for codigo, lotes in inventario.items():
+        for codigo, lotes in st.session_state.inventario.items():
             for lote in lotes:
                 fv = lote.get("fecha_vencimiento")
                 estado = None
