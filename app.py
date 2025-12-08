@@ -499,11 +499,23 @@ with tab2:
         if not st.session_state.lista:
             st.info("El carrito está vacío.")
         else:
+            eliminar = []
             for codigo, cant_lista in st.session_state.lista.items():
                 if codigo in inventario:
                     nombre = inventario[codigo][0]['nombre']
                     marca = inventario[codigo][0]['marca']
-                    st.markdown(f"- **{nombre}** ({marca}): `{cant_lista}` unidades")
+                    
+                    col_det, col_btn = st.columns([0.8, 0.2])
+                    with col_det:
+                        st.markdown(f"**{nombre}** ({marca}): `{cant_lista}` un.")
+                    with col_btn:
+                        if st.button("🗑️", key=f"del_{codigo}", help="Eliminar del carro"):
+                            eliminar.append(codigo)
+            
+            if eliminar:
+                for cod in eliminar:
+                    del st.session_state.lista[cod]
+                st.rerun()
     
     with c_resumen:
         if st.session_state.lista:
