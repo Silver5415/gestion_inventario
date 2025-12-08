@@ -1,9 +1,9 @@
-import streamlit as st
-import pandas as pd
-import gspread
-from datetime import datetime, timedelta
-import matplotlib.pyplot as plt
-import numpy as np
+import streamlit as st #libreria para la aplicacion web
+import pandas as pd #libreria para la lectura de los .xlsx
+import gspread #libreria para el acceso a google sheets
+from datetime import datetime, timedelta # libreria para establecer la hora
+import matplotlib.pyplot as plt # libreria para generar los graficos
+import numpy as np # libreria para calculos matematicos avanzados
 
 st.set_page_config(
     layout="wide", 
@@ -750,3 +750,4 @@ if tab3:
             )
         else:
             st.success("✅ No hay productos próximos a vencer según los rangos seleccionados.")
+
