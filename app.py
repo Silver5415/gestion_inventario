@@ -265,7 +265,7 @@ def guardar_stock_minimo():
 
 def registrar_movimiento(tipo, codigo, nombre, cantidad, fecha_vencimiento, precio_costo, precio_venta):
     nueva_fila = [
-        (datetime.now() - timedelta(hours=2)).isoformat(timespec="seconds"),
+        (datetime.now() - timedelta(hours=3)).isoformat(timespec="seconds"),
         tipo,
         str(codigo),
         nombre,
