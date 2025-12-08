@@ -325,7 +325,7 @@ with tab1:
             productos_lista.sort(key=lambda x: x[1])
 
             opciones = [f"{i+1}) {nombre} - {marca} (Código: {codigo})" 
-                                for i, (codigo, nombre, marca) in enumerate(productos_lista)]
+                                        for i, (codigo, nombre, marca) in enumerate(productos_lista)]
             
             opciones.insert(0, "Cancelar")
             seleccion = st.selectbox("Seleccione un producto", opciones)
@@ -587,7 +587,8 @@ if tab3:
                     idx = opciones.index(seleccion) - 2
                     codigo_seleccionado = productos_lista[idx][0]
                 
-                tipo_movimiento = st.multiselect("Tipo:", ["entrada", "salida"], key="tipo_movimiento")
+                # CAMBIO: Selectbox en lugar de multiselect
+                tipo_movimiento = st.selectbox("Tipo:", ["Todos", "entrada", "salida"], key="tipo_movimiento")
 
             with col_der:
                 c_f1, c_f2 = st.columns(2)
@@ -611,8 +612,9 @@ if tab3:
                     df_filtrado = df.loc[(df["timestamp"] >= fecha_inicio) & (df["timestamp"] < fecha_fin)].copy()
                     df_filtrado['cantidad'] = df_filtrado['cantidad'].apply(_convertir_a_numero)
 
-                    if tipo_movimiento:
-                        df_filtrado = df_filtrado[df_filtrado['tipo'].isin(tipo_movimiento)]
+                    # CAMBIO: Lógica de filtrado para selectbox
+                    if tipo_movimiento != "Todos":
+                        df_filtrado = df_filtrado[df_filtrado['tipo'] == tipo_movimiento]
 
                     if codigo_seleccionado is not None:
                         df_filtrado = df_filtrado[df_filtrado['codigo'] == codigo_seleccionado]
@@ -620,7 +622,8 @@ if tab3:
                     c_graf, c_tabla = st.columns([1, 1])
                     
                     with c_graf:
-                        if 'entrada' in tipo_movimiento or not tipo_movimiento:
+                        # CAMBIO: Lógica de gráficos para selectbox
+                        if tipo_movimiento == "Todos" or tipo_movimiento == "entrada":
                             df_e = df_filtrado[df_filtrado['tipo'] == 'entrada']
                             if not df_e.empty:
                                 fig, ax = plt.subplots(figsize=(6, 4))
@@ -629,7 +632,7 @@ if tab3:
                                 ax.tick_params(axis='x', rotation=45)
                                 st.pyplot(fig)
                         
-                        if 'salida' in tipo_movimiento or not tipo_movimiento:
+                        if tipo_movimiento == "Todos" or tipo_movimiento == "salida":
                             df_s = df_filtrado[df_filtrado['tipo'] == 'salida']
                             if not df_s.empty:
                                 fig2, ax2 = plt.subplots(figsize=(6, 4))
@@ -750,7 +753,3 @@ if tab3:
             )
         else:
             st.success("✅ No hay productos próximos a vencer según los rangos seleccionados.")
-
-
-
-
