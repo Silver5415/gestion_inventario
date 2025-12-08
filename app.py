@@ -52,7 +52,6 @@ USUARIOS = {
     "empleado": {"pass": "user123", "rol": "empleado"}
 }
 
-# --- Inicialización de Session State ---
 if 'inventario' not in st.session_state:
     st.session_state.inventario = {}
 if 'stock_minimo' not in st.session_state:
@@ -63,7 +62,6 @@ if 'data_loaded' not in st.session_state:
     st.session_state.data_loaded = False
 
 def check_login():
-    """Verifica credenciales y asigna estado de sesión"""
     if 'logged_in' not in st.session_state:
         st.session_state.logged_in = False
         st.session_state.rol = None
@@ -93,8 +91,6 @@ def check_login():
 if not check_login():
     st.stop()
 
-# --- Configuración Google Sheets ---
-
 GOOGLE_SHEET_ID = "1Zu-Dq6UCYRKMTWNsxj8FsMzzpAdtvl-qb40CVEmwl44"
 
 INVENTARIO_WS = 'inventario'
@@ -107,7 +103,6 @@ movimientos_headers = ["timestamp", "tipo", "codigo", "nombre", "cantidad", "fec
 
 @st.cache_resource(ttl=3600)
 def obtener_conexion():
-    """Conecta con Google Sheets usando st.secrets"""
     try:
         credentials = dict(st.secrets["gcp_service_account"])
         if "private_key" in credentials:
@@ -179,12 +174,11 @@ def _escribir_sheet(ws_name, headers, datos):
                 fila_str = [str(celda) if celda is not None else "" for celda in fila_expandida[:len(headers)]]
                 datos_limpios.append(fila_str)
             ws.append_rows(datos_limpios, value_input_option='USER_ENTERED')
-            time.sleep(1) # Pausa de seguridad
+            time.sleep(1)
     except Exception as e:
         st.error(f"Error guardando en {ws_name}: {e}")
 
 def cargar_todo(force=False):
-    """Carga datos desde Sheets solo si no están cargados o se fuerza."""
     if st.session_state.data_loaded and not force:
         return
 
@@ -235,7 +229,6 @@ def cargar_todo(force=False):
     st.session_state.data_loaded = True
     
 def guardar_inventario():
-    # Guarda lo que hay en session_state hacia Google Sheets
     filas = []
     for codigo, lotes in st.session_state.inventario.items():
         for d in lotes:
@@ -251,7 +244,7 @@ def guardar_stock_minimo():
 
 def registrar_movimiento(tipo, codigo, nombre, cantidad, fecha_vencimiento, precio_costo, precio_venta):
     nueva_fila = [
-        datetime.now().isoformat(timespec="seconds"),
+        (datetime.now() - timedelta(hours=1)).isoformat(timespec="seconds"),
         tipo, str(codigo), nombre, cantidad,
         fecha_vencimiento or "",
         precio_costo if precio_costo is not None else 0,
@@ -262,12 +255,10 @@ def registrar_movimiento(tipo, codigo, nombre, cantidad, fecha_vencimiento, prec
         ws = sh.worksheet(MOVIMIENTOS_WS)
         fila_str = [str(x) for x in nueva_fila]
         ws.append_row(fila_str)
-        # Actualizamos también la memoria local para que se vea en Historial sin recargar
         st.session_state.movimientos.append(nueva_fila) 
     except Exception as e:
         st.error(f"Error registrando movimiento: {e}")
 
-# Carga inicial (solo lectura, 1 vez)
 cargar_todo(force=False)
 
 with st.sidebar:
@@ -385,7 +376,6 @@ with tab1:
             if submitted:
                 fv = normalizar_fecha(fecha_vencimiento) if aplica_vencimiento else ""
 
-                # 1. Actualizar memoria local (Session State)
                 if es_nuevo:
                     lote = {
                         'nombre': nombre, 'marca': marca, 'cantidad': cantidad,
@@ -409,15 +399,14 @@ with tab1:
                         st.session_state.stock_minimo[codigo_seleccionado] = cant_min
                         mensaje = f"Se creó un nuevo lote con {cantidad} unidades ({fv})"
 
-                # 2. Guardar en Nube (Google Sheets)
-                guardar_inventario() # Escribe Inventario
-                guardar_stock_minimo() # Escribe Stock Min
-                registrar_movimiento("entrada", codigo_seleccionado, nombre, cantidad, fv, precio_costo, precio_venta) # Escribe Movimiento
+                guardar_inventario()
+                guardar_stock_minimo()
+                registrar_movimiento("entrada", codigo_seleccionado, nombre, cantidad, fv, precio_costo, precio_venta)
 
                 st.success(mensaje) 
                 st.session_state.reset_counter += 1
                 time.sleep(0.5)
-                st.rerun() # Actualiza la UI con los datos de memoria
+                st.rerun()
 
 with tab2:
     st.subheader("📤 Registro de Salidas")
@@ -485,7 +474,6 @@ with tab2:
             st.metric("Total Items", total_items)
             
             if st.button("🚀 Confirmar Salida", type="primary"):
-                # 1. Actualizar memoria local
                 for codigo_prod, cantidad_sacar in st.session_state.lista.items():
                     if codigo_prod not in st.session_state.inventario: continue
 
@@ -499,7 +487,6 @@ with tab2:
                             toma = min(l['cantidad'], restante)
                             l['cantidad'] -= toma
                             restante -= toma
-                            # Escribe movimiento en la nube y local
                             registrar_movimiento("salida", codigo_prod, nombre_prod, toma, l.get('fecha_vencimiento',''), l.get('precio_costo'), l.get('precio_venta'))
                         if l['cantidad'] > 0:
                             lotes_finales.append(l)
@@ -509,7 +496,6 @@ with tab2:
                     else:
                         st.session_state.inventario[codigo_prod] = lotes_finales
                 
-                # 2. Guardar en Nube
                 guardar_inventario()
                 
                 st.session_state.lista = {}
@@ -520,7 +506,6 @@ with tab2:
 if tab3:
     with tab3:
         st.subheader("📋 Inventario Completo")
-        # Lee SOLO de memoria (session_state)
         try:
             filas = []
             for codigo, lotes in st.session_state.inventario.items():
@@ -576,7 +561,6 @@ if tab3:
 
     with tab4:
         st.subheader("📊 Historial de Movimientos")
-        # Lee SOLO de memoria (session_state)
         with st.expander("🛠️ Filtros de Búsqueda", expanded=True):
             col_izq, col_der = st.columns(2)
 
@@ -665,7 +649,6 @@ if tab3:
 
     with tab5:
         st.subheader("📉 Niveles de Stock")
-        # Lee SOLO de memoria (session_state)
         data_rows = []
         for c, lotes in st.session_state.inventario.items():
             if lotes:
@@ -719,7 +702,6 @@ if tab3:
             
     with tab6:
         st.subheader("⏰ Alertas de Vencimiento")
-        # Lee SOLO de memoria (session_state)
         with st.expander("⚙️ Configuración de Alertas", expanded=True):
             col_v1, col_v2, col_v3 = st.columns(3)
             alerta_critica = col_v1.slider("Días Críticos (🔴)", 0, 60, 3)
