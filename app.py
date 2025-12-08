@@ -419,45 +419,76 @@ with tab2:
     
     if "lista" not in st.session_state:
         st.session_state.lista = {}
+    
+    if "producto_pendiente_salida" not in st.session_state:
+        st.session_state.producto_pendiente_salida = None
 
     def procesar_codigo_escaneado():
-        codigo_sin_procesar = st.session_state.codigo
-        if not codigo_sin_procesar: return
-
-        cantidad = 1
-        codigo_producto = ""
-
-        if "*" in codigo_sin_procesar:
-            try:
-                partes = codigo_sin_procesar.split("*", 1)
-                cantidad = _convertir_a_numero(partes[0].strip(), por_defecto=1)
-                codigo_producto = partes[1].strip()
-            except:
-                codigo_producto = codigo_sin_procesar.strip()
-        else:
-            codigo_producto = codigo_sin_procesar.strip()
-            cantidad = 1
+        codigo_leido = st.session_state.input_salida_codigo
+        if not codigo_leido: return
         
-        if codigo_producto not in inventario:
-            st.toast(f"❌ El {codigo_producto} no existe")
-            st.session_state.codigo = ""
+        # Limpiar input inmediatamente para UX
+        st.session_state.input_salida_codigo = ""
+        codigo = codigo_leido.strip()
+        
+        if codigo not in inventario:
+            st.toast(f"❌ El código {codigo} no existe")
             return
 
-        stock_disp = stock_total(codigo_producto)
-        en_lista = st.session_state.lista.get(codigo_producto, 0)
+        # Establecer producto pendiente para mostrar el formulario de cantidad
+        st.session_state.producto_pendiente_salida = codigo
+
+    # Input de escaneo
+    st.text_input("🔢 Escanee código para agregar a salida:", 
+                  key="input_salida_codigo", 
+                  on_change=procesar_codigo_escaneado)
+
+    # Bloque de selección de cantidad si hay un producto pendiente
+    if st.session_state.producto_pendiente_salida:
+        cod_pend = st.session_state.producto_pendiente_salida
         
-        if (en_lista + cantidad) > stock_disp:
-            st.toast(f"⚠️ Stock insuficiente. Disponible: {stock_disp}")
-        else:
-            if codigo_producto in st.session_state.lista:
-                st.session_state.lista[codigo_producto] += cantidad
+        if cod_pend in inventario:
+            lotes = inventario[cod_pend]
+            nombre_prod = lotes[0]['nombre']
+            marca_prod = lotes[0]['marca']
+            stock_disp_total = stock_total(cod_pend)
+            en_lista = st.session_state.lista.get(cod_pend, 0)
+            stock_real_disp = stock_disp_total - en_lista
+
+            st.info(f"🛒 Seleccionando cantidad para: **{nombre_prod}** ({marca_prod})")
+            st.write(f"Stock total: {stock_disp_total} | En carrito: {en_lista} | **Disponible: {stock_real_disp}**")
+
+            if stock_real_disp <= 0:
+                st.error("⚠️ Sin stock disponible para agregar más.")
+                if st.button("Cancelar selección"):
+                    st.session_state.producto_pendiente_salida = None
+                    st.rerun()
             else:
-                st.session_state.lista[codigo_producto] = cantidad
-            st.toast(f"✅ Agregado: {codigo_producto}")
+                with st.form("form_cantidad_salida"):
+                    col_cant, col_btn = st.columns([1,1])
+                    with col_cant:
+                        cantidad_selec = st.number_input("Cantidad:", min_value=1, max_value=int(stock_real_disp), value=1, step=1)
+                    with col_btn:
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        b_agregar = st.form_submit_button("➕ Agregar al Carrito", type="primary")
+                        b_cancelar = st.form_submit_button("❌ Cancelar")
 
-        st.session_state.codigo = ""
-
-    st.text_input("🔢 Escanee código (Ej: 5*CODIGO para cantidad):", key="codigo", on_change=procesar_codigo_escaneado)
+                    if b_agregar:
+                        if cod_pend in st.session_state.lista:
+                            st.session_state.lista[cod_pend] += cantidad_selec
+                        else:
+                            st.session_state.lista[cod_pend] = cantidad_selec
+                        
+                        st.toast(f"✅ Agregado: {cantidad_selec} de {nombre_prod}")
+                        st.session_state.producto_pendiente_salida = None
+                        st.rerun()
+                    
+                    if b_cancelar:
+                        st.session_state.producto_pendiente_salida = None
+                        st.rerun()
+        else:
+             st.error("El producto ya no existe en el inventario.")
+             st.session_state.producto_pendiente_salida = None
 
     st.divider()
     
@@ -750,4 +781,3 @@ if tab3:
             )
         else:
             st.success("✅ No hay productos próximos a vencer según los rangos seleccionados.")
-
